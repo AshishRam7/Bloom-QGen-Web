@@ -10,19 +10,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Feedback Stage Elements
     const feedbackStageArea = document.getElementById('feedback-stage-area');
-    const markdownContentEl = document.getElementById('markdown-content'); // Renamed variable
-    const initialQuestionsContentEl = document.getElementById('initial-questions-content'); // Renamed variable
+    const markdownContentEl = document.getElementById('markdown-content'); // In feedback stage
+    const initialQuestionsContentEl = document.getElementById('initial-questions-content');
     const feedbackInput = document.getElementById('feedback-input');
     const regenerateButton = document.getElementById('regenerate-button');
 
     // Final Results Elements
     const resultsArea = document.getElementById('results-area');
     const resultsTitle = document.getElementById('results-title');
-    // Specific elements within final results for clarity
+    const finalMarkdownContentEl = document.getElementById('final-markdown-content'); // <<< Added
     const finalQuestionsContentEl = document.getElementById('final-questions-content');
     const finalEvaluationFeedbackEl = document.getElementById('final-evaluation-feedback');
     const finalPerQuestionEvaluationEl = document.getElementById('final-per-question-evaluation');
     const finalContextPreviewEl = document.getElementById('final-context-preview');
+    const imageSlideshowInnerEl = document.getElementById('image-slideshow-inner'); // <<< Added
+    const noImagesMessageEl = document.getElementById('no-images-message'); // <<< Added
 
 
     // --- State Variables ---
@@ -38,266 +40,136 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleFormSubmit(event) {
         event.preventDefault();
-        console.log("Form submitted");
+        console.log("[handleFormSubmit] Form submitted");
         resetUI();
-
         showStatus('Initiating request...');
         disableButton(submitButton, 'Processing...');
-
         const formData = new FormData(form);
-        if (!validateForm(formData)) {
-            resetSubmitButton();
-            hideStatus();
-            return;
-        }
-
+        if (!validateForm(formData)) { resetSubmitButton(); hideStatus(); return; }
         try {
-            const response = await fetch('/start-processing', {
-                method: 'POST',
-                body: formData,
-            });
-
+            const response = await fetch('/start-processing', { method: 'POST', body: formData });
             const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.detail || `HTTP error! status: ${response.status}`);
-            }
-
+            if (!response.ok) { throw new Error(data.detail || `HTTP error! status: ${response.status}`); }
             currentJobId = data.job_id;
-            console.log("Job started with ID:", currentJobId);
-            if (currentJobId) {
-                showStatus('Job started. Processing documents... (This may take several minutes)');
-                startPolling();
-            } else {
-                throw new Error('Failed to get Job ID from server.');
-            }
-
+            console.log("[handleFormSubmit] Job started with ID:", currentJobId);
+            if (currentJobId) { showStatus('Job started. Processing documents...'); startPolling(); }
+            else { throw new Error('Failed to get Job ID from server.'); }
         } catch (error) {
-            console.error('Error submitting form:', error);
-            showError(`Submission failed: ${error.message}`);
-            resetSubmitButton();
-            hideStatus();
+            console.error('[handleFormSubmit] Error submitting form:', error);
+            showError(`Submission failed: ${error.message}`); resetSubmitButton(); hideStatus();
         }
     }
 
     async function handleRegenerationSubmit() {
-        console.log("Regenerate button clicked for job:", currentJobId);
-        if (!currentJobId) {
-            showError("No active job found for regeneration.");
-            return;
-        }
-
+        console.log("[handleRegenerationSubmit] Regenerate button clicked for job:", currentJobId);
+        if (!currentJobId) { showError("No active job found for regeneration."); return; }
         const feedback = feedbackInput.value.trim();
-        // Allow regeneration even without feedback (to finalize/run evaluation)
-        // if (!feedback) {
-        //     showError("Please provide feedback before regenerating.");
-        //     feedbackInput.classList.add('is-invalid');
-        //     return;
-        // }
         feedbackInput.classList.remove('is-invalid');
-
         showStatus('Submitting feedback and finalizing/regenerating questions...');
         disableButton(regenerateButton, 'Processing...');
-        feedbackStageArea.style.display = 'none'; // Hide feedback section during processing
-
+        feedbackStageArea.style.display = 'none';
         try {
             const response = await fetch(`/regenerate-questions/${currentJobId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ feedback: feedback }), // Send feedback (can be empty)
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback: feedback }),
             });
-
             const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.detail || `Regeneration request failed: ${response.status}`);
-            }
-
-             console.log("Regeneration request response status:", data.status);
-             // Status should now be processing_feedback or queued for the background task
+            if (!response.ok) { throw new Error(data.detail || `Regeneration request failed: ${response.status}`); }
+             console.log("[handleRegenerationSubmit] Regeneration request response status:", data.status);
              if (data.status === 'processing_feedback' || data.status === 'queued') {
-                 currentJobId = data.job_id; // Re-confirm job ID
-                 showStatus(data.message || 'Evaluation/Regeneration in progress...');
-                 startPolling(); // Restart polling for the final result
+                 currentJobId = data.job_id; showStatus(data.message || 'Evaluation/Regeneration in progress...'); startPolling();
              } else {
-                  // Handle unexpected immediate completion or error from endpoint directly
-                  console.warn("Unexpected status from /regenerate endpoint:", data.status);
-                   if (data.status === 'completed') {
-                       displayFinalResults(data.result);
-                       hideStatus();
-                   } else if (data.status === 'error') {
-                       showError(data.message || 'Regeneration failed on server.');
-                       hideStatus();
-                   } else {
-                        showStatus(`Unexpected status: ${data.status}. Polling anyway...`);
-                        startPolling(); // Fallback to polling
-                   }
+                  console.warn("[handleRegenerationSubmit] Unexpected status from /regenerate endpoint:", data.status);
+                   if (data.status === 'completed') { displayFinalResults(data.result); hideStatus(); }
+                   else if (data.status === 'error') { showError(data.message || 'Regeneration failed on server.'); hideStatus(); }
+                   else { showStatus(`Unexpected status: ${data.status}. Polling anyway...`); startPolling(); }
              }
-
         } catch (error) {
-            console.error('Error during regeneration:', error);
+            console.error('[handleRegenerationSubmit] Error during regeneration:', error);
             showError(`Regeneration failed: ${error.message}`);
-            enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); // Re-enable button on error
-            // Optionally re-show feedback area? Maybe not, let user retry.
-            // feedbackStageArea.style.display = 'block';
-        }
-    }
-
-
-    function startPolling() {
-        stopPolling(); // Clear any existing interval
-        if (!currentJobId) {
-            console.error("Cannot start polling without a job ID.");
-            return;
-        }
-        console.log(`Polling started for job ${currentJobId} (interval: ${POLLING_INTERVAL_MS}ms)`);
-        // Run immediately first time
-        checkJobStatus();
-        // Then set interval
-        pollInterval = setInterval(checkJobStatus, POLLING_INTERVAL_MS);
-    }
-
-    function stopPolling() {
-        if (pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-             console.log(`Polling stopped for job ${currentJobId}`);
-        }
-    }
-
-    async function checkJobStatus() {
-        if (!currentJobId) {
-             console.warn("checkJobStatus called without currentJobId, stopping poll.");
-             stopPolling();
-             return;
-        };
-
-        // console.log(`Checking status for job ${currentJobId}`); // Reduce log verbosity
-        try {
-            const response = await fetch(`/status/${currentJobId}`);
-
-             if (!response.ok) {
-                 let errorMsg = `Error checking status: ${response.status} ${response.statusText}. Stopping polling.`;
-                 if (response.status === 404) { errorMsg = `Job ID ${currentJobId} not found on server. Stopping polling.`; }
-                 showError(errorMsg);
-                 console.error(errorMsg);
-                 stopPolling();
-                 resetSubmitButton(); // Also enable main submit button
-                 enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
-                 return;
-             }
-
-            const data = await response.json();
-            // console.log("Received status data:", data); // Log received data for debugging
-
-            updateStatus(data.status, data.message || '...'); // Update status bar message
-
-            // --- Handle different statuses ---
-            switch (data.status) {
-                case 'awaiting_feedback':
-                    console.log("Status is awaiting_feedback, updating UI.");
-                    stopPolling(); // Stop polling once we reach this intermediate state
-                    displayFeedbackStage(data.result);
-                    hideStatus();
-                    resetSubmitButton(); // Allow new submission
-                    enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); // Ensure regenerate button is active
-                    break;
-                case 'completed':
-                    console.log("Status is completed, updating UI.");
-                    stopPolling();
-                    displayFinalResults(data.result);
-                    hideStatus();
-                    resetSubmitButton();
-                    enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); // Re-enable just in case
-                    feedbackStageArea.style.display = 'none'; // Ensure feedback stage is hidden
-                    break;
-                case 'error':
-                    console.error("Job status is error:", data.message);
-                    stopPolling();
-                    showError(data.message || 'An unknown error occurred during processing.');
-                    hideStatus();
-                    resetSubmitButton();
-                    enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
-                    feedbackStageArea.style.display = 'none'; // Hide feedback stage on error
-                    break;
-                case 'pending':
-                case 'queued':
-                case 'processing':
-                case 'processing_feedback':
-                    // Continue polling, status message already updated
-                    // console.log(`Status is ${data.status}, continuing poll.`); // Reduce verbosity
-                    break;
-                default:
-                     console.warn(`Unknown job status received: ${data.status}. Continuing poll.`);
-                     // Continue polling, maybe log message
-            }
-
-        } catch (error) {
-            console.error('Error parsing status response or during polling:', error);
-            showError(`Error checking job status: ${error.message}. Stopping polling.`);
-            stopPolling();
-            resetSubmitButton();
             enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
         }
     }
 
-     function displayFeedbackStage(result) {
-        hideError(); // Clear previous errors
-        if (!result) {
-            showError("No result data received for feedback stage. Cannot display.");
-            console.error("displayFeedbackStage called with null or undefined result");
-            feedbackStageArea.style.display = 'none';
-            return;
+    function startPolling() {
+        stopPolling(); if (!currentJobId) { console.error("[startPolling] No job ID."); return; }
+        console.log(`[startPolling] Polling started for job ${currentJobId}`);
+        checkJobStatus(); pollInterval = setInterval(checkJobStatus, POLLING_INTERVAL_MS);
+    }
+
+    function stopPolling() {
+        if (pollInterval) { clearInterval(pollInterval); pollInterval = null; console.log(`[stopPolling] Polling stopped for job ${currentJobId}`); }
+    }
+
+    async function checkJobStatus() {
+        console.log(`[checkJobStatus] Checking status for job ${currentJobId}...`);
+        if (!currentJobId) { console.warn("[checkJobStatus] No currentJobId."); stopPolling(); return; };
+        try {
+            console.log(`[checkJobStatus] Fetching /status/${currentJobId}`);
+            const response = await fetch(`/status/${currentJobId}`);
+            console.log(`[checkJobStatus] Fetch response status: ${response.status}`);
+             if (!response.ok) {
+                 let errorMsg = `Error checking status ${response.status}.`; if (response.status === 404) errorMsg = `Job ID ${currentJobId} not found.`;
+                 console.error(`[checkJobStatus] Fetch failed: ${errorMsg}`); showError(errorMsg); stopPolling(); resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); return;
+             }
+            console.log(`[checkJobStatus] Parsing JSON...`);
+            const data = await response.json();
+            console.log("[checkJobStatus] Received status data:", data);
+            updateStatus(data.status, data.message || '...');
+
+            switch (data.status) {
+                case 'awaiting_feedback':
+                    console.log("[checkJobStatus] Status is awaiting_feedback."); stopPolling(); displayFeedbackStage(data.result); hideStatus(); resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); break;
+                case 'completed':
+                    console.log("[checkJobStatus] Status is completed."); stopPolling(); displayFinalResults(data.result); hideStatus(); resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); feedbackStageArea.style.display = 'none'; break;
+                case 'error':
+                    console.error("[checkJobStatus] Job status is error:", data.message); stopPolling(); showError(data.message || 'An unknown error occurred.'); hideStatus(); resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); feedbackStageArea.style.display = 'none'; break;
+                case 'pending': case 'queued': case 'processing': case 'processing_feedback':
+                    console.log(`[checkJobStatus] Status is ${data.status}, continuing poll.`); break;
+                default: console.warn(`[checkJobStatus] Unknown job status: ${data.status}.`);
+            }
+        } catch (error) {
+            console.error('[checkJobStatus] Error during fetch/processing status:', error); showError(`Error checking job status: ${error.message}.`); stopPolling(); resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
         }
-        console.log("Displaying feedback stage for job:", currentJobId);
+    }
 
-        // Check if elements exist before setting content
-        if (markdownContentEl) {
-            markdownContentEl.textContent = result.extracted_markdown || 'No markdown content available.';
-        } else { console.error("Markdown content element not found"); }
+    function displayFeedbackStage(result) {
+        hideError();
+        if (!result) { showError("Result data missing for feedback stage."); console.error("displayFeedbackStage no result"); feedbackStageArea.style.display = 'none'; return; }
+        console.log("[displayFeedbackStage] Displaying feedback stage");
 
-        if (initialQuestionsContentEl) {
-             initialQuestionsContentEl.textContent = result.initial_questions || 'No initial questions available.';
-        } else { console.error("Initial questions content element not found"); }
+        if (markdownContentEl) { markdownContentEl.textContent = result.extracted_markdown || 'Markdown not available.'; } else { console.error("Markdown element missing"); }
+        if (initialQuestionsContentEl) { initialQuestionsContentEl.textContent = result.initial_questions || 'Initial questions not available.'; } else { console.error("Initial questions element missing"); }
 
-
-        feedbackInput.value = ''; // Clear previous feedback
-        feedbackInput.classList.remove('is-invalid'); // Clear error state
-
-        hideResults(); // Hide final results area
-        feedbackStageArea.style.display = 'block'; // Show the feedback section
-        enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate'); // Ensure button is enabled
+        feedbackInput.value = ''; feedbackInput.classList.remove('is-invalid');
+        hideResults(); feedbackStageArea.style.display = 'block'; enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
+        console.log("[displayFeedbackStage] Feedback stage visible.");
     }
 
     function displayFinalResults(result) {
-        hideError(); // Clear previous errors
-        if (!result) {
-           showError("No final result data received.");
-           console.error("displayFinalResults called with null or undefined result");
-           resultsArea.style.display = 'none';
-           return;
-       }
-        console.log("Displaying final results for job:", currentJobId);
+        hideError();
+        if (!result) { showError("Final result data missing."); console.error("displayFinalResults no result"); resultsArea.style.display = 'none'; return; }
+        console.log("[displayFinalResults] Displaying final results");
 
-       resultsArea.style.display = 'block'; // Show final results area
-       resultsTitle.textContent = "Final Generated Questions & Evaluation"; // Set title
-       feedbackStageArea.style.display = 'none'; // Hide feedback area
+        resultsArea.style.display = 'block'; resultsTitle.textContent = "Final Generated Questions & Evaluation"; feedbackStageArea.style.display = 'none';
 
         // --- Populate Final Results Elements ---
-        if(finalQuestionsContentEl) {
-             finalQuestionsContentEl.textContent = result.generated_questions || 'No final questions generated.';
-        } else { console.error("Final questions element not found"); }
+        // Final Markdown
+        if(finalMarkdownContentEl) { finalMarkdownContentEl.textContent = result.extracted_markdown || 'Markdown not available.'; }
+        else { console.error("[displayFinalResults] Final markdown element not found"); }
 
-        if (finalEvaluationFeedbackEl) {
-            finalEvaluationFeedbackEl.textContent = result.evaluation_feedback || 'No evaluation feedback available.';
-        } else { console.error("Final evaluation feedback element not found"); }
+        // Final Questions
+        if(finalQuestionsContentEl) { finalQuestionsContentEl.textContent = result.generated_questions || 'No final questions generated.'; }
+        else { console.error("[displayFinalResults] Final questions element not found"); }
 
-        // Display Per-Question Evaluation
+        // Eval Summary
+        if (finalEvaluationFeedbackEl) { finalEvaluationFeedbackEl.textContent = result.evaluation_feedback || 'No evaluation feedback available.'; }
+        else { console.error("[displayFinalResults] Final evaluation feedback element not found"); }
+
+        // Per-Question Details
         if (finalPerQuestionEvaluationEl) {
              finalPerQuestionEvaluationEl.innerHTML = ''; // Clear previous
-             if (result.per_question_evaluation && Array.isArray(result.per_question_evaluation)) {
-                 const list = document.createElement('ul');
-                 list.className = 'evaluation-list';
+             if (result.per_question_evaluation && Array.isArray(result.per_question_evaluation) && result.per_question_evaluation.length > 0) {
+                 const list = document.createElement('ul'); list.className = 'evaluation-list';
                  result.per_question_evaluation.forEach(q_eval => {
                      const item = document.createElement('li');
                      let metricsHtml = `<span class="metric-item">QSTS: ${q_eval.qsts_score?.toFixed(3) ?? 'N/A'}</span>`;
@@ -306,137 +178,134 @@ document.addEventListener('DOMContentLoaded', () => {
                               const statusClass = passed ? 'pass' : 'fail';
                               metricsHtml += `<span class="metric-item">${metric}: <span class="${statusClass}">${passed ? 'Pass' : 'FAIL'}</span></span>`;
                          }
-                     }
+                     } else { metricsHtml += `<span class="metric-item">Qualitative: N/A</span>`; }
+                     // Ensure question text exists
+                     const qText = q_eval.question_text || '[Question text missing]';
                      item.innerHTML = `
-                         <span class="question-text">Q${q_eval.question_num}: ${q_eval.question_text}</span>
+                         <span class="question-text">Q${q_eval.question_num}: ${qText}</span>
                          <div style="width: 100%; margin-top: 5px;">${metricsHtml}</div>
                      `;
                      list.appendChild(item);
                  });
                  finalPerQuestionEvaluationEl.appendChild(list);
-             } else {
-                 finalPerQuestionEvaluationEl.textContent = 'No per-question evaluation details available.';
-             }
-        } else { console.error("Final per-question evaluation element not found"); }
+             } else { finalPerQuestionEvaluationEl.textContent = 'No per-question evaluation details available.'; }
+        } else { console.error("[displayFinalResults] Final per-question evaluation element not found"); }
 
-        // Display Context Preview
-        if(finalContextPreviewEl) {
-            finalContextPreviewEl.textContent = result.retrieved_context_preview || 'No context preview available.';
-        } else { console.error("Final context preview element not found"); }
+        // Image Slideshow
+        if (imageSlideshowInnerEl) {
+            imageSlideshowInnerEl.innerHTML = ''; // Clear previous items or 'no images' message
+            const imagePaths = result.image_paths; // Get paths from result
+            if (imagePaths && Array.isArray(imagePaths) && imagePaths.length > 0) {
+                imagePaths.forEach((imgPath, index) => {
+                    const div = document.createElement('div');
+                    div.className = `carousel-item${index === 0 ? ' active' : ''}`; // Mark first as active
+                    const img = document.createElement('img');
+                    // IMPORTANT: Construct the URL based on how static files are served
+                    // The backend stores URLs like "/static/images/JOB_ID/REL_PATH"
+                    img.src = imgPath; // Use the URL directly from backend
+                    img.className = 'd-block w-100'; // Bootstrap class
+                    img.alt = `Extracted Image ${index + 1}`;
+                    img.style.objectFit = 'contain'; // Ensure image fits without distortion
+                    img.style.maxHeight = '50vh';   // Limit height
+                    img.onerror = () => { // Handle cases where the image might not load
+                        img.alt = `Error loading image: ${imgPath}`;
+                        // Optionally display placeholder or error message
+                        div.innerHTML = `<div class="d-flex justify-content-center align-items-center" style="height: 200px; color: red;">Error loading image: ${imgPath.split('/').pop()}</div>`;
+                    };
+                    div.appendChild(img);
+                    imageSlideshowInnerEl.appendChild(div);
+                });
+                 // Ensure carousel controls are visible only if there are multiple images
+                 const carouselElement = document.getElementById('image-slideshow');
+                 const controls = carouselElement.querySelectorAll('.carousel-control-prev, .carousel-control-next');
+                 controls.forEach(control => {
+                     control.style.display = imagePaths.length > 1 ? 'flex' : 'none';
+                 });
+
+            } else {
+                // Display the 'no images' message if the element exists
+                if (noImagesMessageEl) {
+                     imageSlideshowInnerEl.innerHTML = '<div class="carousel-item active"><span id="no-images-message">No images were extracted from the document(s).</span></div>';
+                } else { // Fallback if specific message element isn't found
+                     imageSlideshowInnerEl.innerHTML = '<div class="carousel-item active"><span>No images extracted.</span></div>';
+                }
+                 // Hide controls if no images
+                 const carouselElement = document.getElementById('image-slideshow');
+                 const controls = carouselElement.querySelectorAll('.carousel-control-prev, .carousel-control-next');
+                 controls.forEach(control => { control.style.display = 'none'; });
+            }
+        } else { console.error("[displayFinalResults] Image slideshow inner element not found"); }
+
+
+        // Context Preview
+        if(finalContextPreviewEl) { finalContextPreviewEl.textContent = result.retrieved_context_preview || 'No context preview available.'; }
+        else { console.error("[displayFinalResults] Final context preview element not found"); }
+
+        console.log("[displayFinalResults] Final results display updated.");
    }
 
 
     // --- UI Helper Functions ---
     function resetUI() {
-        console.log("Resetting UI");
-        hideError();
-        hideStatus();
-        hideResults();
-        feedbackStageArea.style.display = 'none'; // Ensure feedback stage is hidden
-        resetSubmitButton();
-        enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
+        console.log("[resetUI] Resetting UI state");
+        hideError(); hideStatus(); hideResults();
+        feedbackStageArea.style.display = 'none';
+        resetSubmitButton(); enableButton(regenerateButton, 'Evaluate & Finalize / Regenerate');
         feedbackInput.value = '';
-        // Clear content of display areas
+        // Clear content
         if (markdownContentEl) markdownContentEl.textContent = '';
         if (initialQuestionsContentEl) initialQuestionsContentEl.textContent = '';
+        if (finalMarkdownContentEl) finalMarkdownContentEl.textContent = ''; // <<< Added
         if (finalQuestionsContentEl) finalQuestionsContentEl.textContent = '';
         if (finalEvaluationFeedbackEl) finalEvaluationFeedbackEl.textContent = '';
         if (finalPerQuestionEvaluationEl) finalPerQuestionEvaluationEl.innerHTML = '';
         if (finalContextPreviewEl) finalContextPreviewEl.textContent = '';
+        if (imageSlideshowInnerEl) imageSlideshowInnerEl.innerHTML = '<div class="carousel-item active"><span id="no-images-message">No images extracted or available.</span></div>'; // <<< Reset Slideshow
 
-        // Clear validation errors on form inputs
-         form.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
-         // Optionally reset form fields completely:
-         // form.reset();
+        form.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
     }
 
-     function validateForm(formData) {
-         let isValid = true;
-         const files = formData.getAll('files');
-         // Check if files array exists and contains actual file objects (name check isn't sufficient)
-         if (!files || files.length === 0 || files.some(f => typeof f !== 'object' || !f.name)) {
-             showError('Please select at least one valid PDF file.');
-             isValid = false;
-             document.getElementById('files')?.classList.add('is-invalid');
-         } else {
-             document.getElementById('files')?.classList.remove('is-invalid');
-         }
-
-         const requiredFields = ['course_name', 'major', 'academic_level', 'taxonomy_level', 'num_questions', 'topics_list'];
-         for (const fieldName of requiredFields) {
-             const field = document.getElementById(fieldName);
-             if (!formData.get(fieldName)) {
-                 showError(`Please fill in the '${field?.previousElementSibling?.textContent || fieldName}' field.`);
-                 field?.classList.add('is-invalid');
-                 isValid = false;
-             } else {
-                  field?.classList.remove('is-invalid');
-             }
-         }
-         // Add validation for number range? Handled by HTML5 min/max mostly.
-
-         return isValid;
-     }
-
-    function disableButton(button, text) {
-        if (!button) return;
-        button.disabled = true;
-        button.innerHTML = `
-            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-            ${text}
-        `;
-    }
-
-     function enableButton(button, text) {
-        if (!button) return;
-        button.disabled = false;
-        button.innerHTML = text;
-    }
-
-
-    function resetSubmitButton() {
-        enableButton(submitButton, 'Generate Questions');
-    }
-
-    function showStatus(message) {
-        statusMessage.textContent = message;
-        statusArea.style.display = 'block';
-        loadingSpinner.style.display = 'inline-block';
-    }
-
-    function updateStatus(status, message) {
-        const statusText = status ? `${status.toUpperCase()}: ${message}` : message;
-        statusMessage.textContent = statusText;
-        // Hide spinner only on final states or intermediate feedback state
-        if (['completed', 'error', 'awaiting_feedback'].includes(status)) {
-            loadingSpinner.style.display = 'none';
-        } else {
-            loadingSpinner.style.display = 'inline-block';
+     function validateForm(formData) { /* ... keep validation logic ... */
+        console.log("[validateForm] Validating form data");
+        let isValid = true;
+        const files = formData.getAll('files');
+        if (!files || files.length === 0 || files.some(f => typeof f !== 'object' || !f.name) ) {
+            showError('Please select at least one valid PDF file.');
+            isValid = false; document.getElementById('files')?.classList.add('is-invalid');
+        } else { document.getElementById('files')?.classList.remove('is-invalid'); }
+        const requiredFields = ['course_name', 'major', 'academic_level', 'taxonomy_level', 'num_questions', 'topics_list'];
+        for (const fieldName of requiredFields) {
+            const field = document.getElementById(fieldName);
+            if (!formData.get(fieldName)) {
+                showError(`Please fill in the '${field?.previousElementSibling?.textContent || fieldName}' field.`);
+                field?.classList.add('is-invalid'); isValid = false;
+            } else { field?.classList.remove('is-invalid'); }
         }
+        console.log("[validateForm] Validation result:", isValid);
+        return isValid;
     }
-
-    function hideStatus() {
-        statusArea.style.display = 'none';
-    }
-
-    function showError(message) {
-        errorMessage.textContent = message;
-        errorArea.style.display = 'block';
-        hideStatus(); // Hide loading status when error occurs
-    }
-
-    function hideError() {
-        errorArea.style.display = 'none';
-        errorMessage.textContent = '';
-    }
-
+    function disableButton(button, text) { if (!button) return; button.disabled = true; button.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${text}`; }
+    function enableButton(button, text) { if (!button) return; button.disabled = false; button.innerHTML = text; }
+    function resetSubmitButton() { enableButton(submitButton, 'Generate Questions'); }
+    function showStatus(message) { statusMessage.textContent = message; statusArea.style.display = 'block'; loadingSpinner.style.display = 'inline-block'; }
+    function hideStatus() { statusArea.style.display = 'none'; }
+    function showError(message) { errorMessage.textContent = message; errorArea.style.display = 'block'; hideStatus(); }
+    function hideError() { errorArea.style.display = 'none'; errorMessage.textContent = ''; }
     function hideResults() {
         resultsArea.style.display = 'none';
         // Clear results content when hiding
+        if (finalMarkdownContentEl) finalMarkdownContentEl.textContent = ''; // <<< Added
         if (finalQuestionsContentEl) finalQuestionsContentEl.textContent = '';
         if (finalEvaluationFeedbackEl) finalEvaluationFeedbackEl.textContent = '';
         if (finalPerQuestionEvaluationEl) finalPerQuestionEvaluationEl.innerHTML = '';
         if (finalContextPreviewEl) finalContextPreviewEl.textContent = '';
+        if (imageSlideshowInnerEl) imageSlideshowInnerEl.innerHTML = '<div class="carousel-item active"><span id="no-images-message">No images extracted or available.</span></div>'; // <<< Reset Slideshow
+    }
+    function updateStatus(status, message) {
+        const statusText = status ? `${status.toUpperCase()}: ${message}` : message;
+        statusMessage.textContent = statusText;
+        if (['completed', 'error', 'awaiting_feedback'].includes(status)) { loadingSpinner.style.display = 'none'; }
+        else { loadingSpinner.style.display = 'inline-block'; }
     }
 
 }); // End DOMContentLoaded
