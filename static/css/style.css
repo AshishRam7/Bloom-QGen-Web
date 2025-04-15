@@ -1,159 +1,330 @@
-/* --- static/css/style.css --- */
+/* Basic Reset & Font */
+body, h1, h2, h3, h4, p, label, input, button, select, textarea, pre {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: sans-serif;
+}
 
-/* Basic Layout & Typography */
+/* --- Theme Variables --- */
+:root {
+    --bg-color: #f8f9fa;
+    --text-color: #343a40;
+    --header-bg: #e9ecef;
+    --header-text: #495057;
+    --card-bg: #ffffff;
+    --border-color: #dee2e6;
+    --button-bg: #007bff;
+    --button-text: #ffffff;
+    --button-hover-bg: #0056b3;
+    --accent-color: #007bff;
+    --input-bg: #fff;
+    --input-border: #ced4da;
+    --pre-bg: #e9ecef;
+    --link-color: #007bff;
+    --error-color: #dc3545;
+    --success-color: #28a745;
+    --info-color: #17a2b8;
+    --progress-bar-bg: #e9ecef;
+    --progress-bar-fill: #007bff;
+
+    --image-border: #ccc;
+    --nav-button-bg: #6c757d;
+    --nav-button-hover: #5a6268;
+}
+
+body.dark-mode {
+    --bg-color: #1a1a2e; /* Dark violet/blue */
+    --text-color: #e0e0e0; /* Light grey */
+    --header-bg: #2a2a4e; /* Slightly lighter violet */
+    --header-text: #f0f0f0; /* Lighter text */
+    --card-bg: #24243e;   /* Darker card background */
+    --border-color: #4a4a6e; /* Muted violet border */
+    --button-bg: #c738c9; /* Magenta */
+    --button-text: #ffffff;
+    --button-hover-bg: #a12fa3; /* Darker magenta */
+    --accent-color: #e040fb; /* Lighter magenta/violet */
+    --input-bg: #2a2a4e;
+    --input-border: #4a4a6e;
+    --pre-bg: #2a2a4e;
+    --link-color: #e040fb;
+    --error-color: #ff8a80; /* Lighter red for dark */
+    --success-color: #80cbc4; /* Lighter green */
+    --info-color: #80deea; /* Lighter cyan */
+    --progress-bar-bg: #4a4a6e;
+    --progress-bar-fill: #c738c9;
+
+    --image-border: #555;
+    --nav-button-bg: #5a5a8e;
+    --nav-button-hover: #7a7ab8;
+}
+
+/* --- General Layout & Styles --- */
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    padding-top: 20px;
-    padding-bottom: 60px; /* Add padding at bottom */
-    background-color: #f8f9fa; /* Light grey background */
-}
-
-.container {
-    max-width: 960px; /* Limit main content width */
-}
-
-/* Cards and Section Styling */
-.card {
-    margin-bottom: 20px;
-    border: 1px solid #dee2e6;
-}
-
-.section-box {
-    background-color: #fff;
-    border: 1px solid #dee2e6;
-    border-radius: .375rem; /* Standard Bootstrap radius */
-    padding: 1.5rem;
-    margin-top: 20px;
-}
-
-/* Use consistent heading margins within sections */
-.section-box h4, .section-box h5 {
-    margin-top: 0; /* Remove default top margin */
-    margin-bottom: 1rem; /* Add space below headings */
-    color: #0d6efd; /* Bootstrap primary blue */
-}
-
-/* Preformatted Text Styling (Markdown, Questions) */
-#markdown-content,
-#initial-questions-content,
-#final-questions-content,
-#final-context-preview { /* Apply to all pre elements */
-    white-space: pre-wrap;      /* Wrap lines */
-    word-wrap: break-word;     /* Break long words */
-    max-height: 45vh;          /* Limit height and enable scroll */
-    overflow-y: auto;
-    display: block;            /* Ensure it behaves like a block */
-    background-color: #e9ecef; /* Light grey background */
-    border: 1px solid #ced4da; /* Subtle border */
-    padding: 15px;             /* More padding */
-    border-radius: 4px;        /* Slight rounding */
-    font-family: Consolas, 'Courier New', monospace; /* Monospace font */
-    font-size: 0.9rem;         /* Slightly smaller font */
-    line-height: 1.5;          /* Better line spacing */
-}
-
-#final-context-preview {
-    font-size: 0.8rem; /* Make context preview smaller */
-    color: #6c757d;   /* Muted color for context */
-    background-color: #f8f9fa; /* Match body background? Or keep light grey */
-}
-
-
-/* Feedback and Evaluation Details Styling */
-.feedback-section {
-    margin-top: 1rem;
-    font-style: italic;
-    color: #5a5a5a; /* Darker grey for readability */
-    white-space: pre-wrap; /* Preserve formatting */
-    background-color: #f8f9fa; /* Light background */
-    border-left: 3px solid #0dcaf0; /* Info color accent */
-    padding: 10px 15px;
-    border-radius: 3px;
-}
-
-.evaluation-details {
-    font-size: 0.9em;
-    color: #6c757d;
-    margin-top: 1rem;
-}
-
-/* Per-Question Evaluation List */
-.evaluation-list {
-    list-style-type: none;
-    padding-left: 0;
-    margin-top: 0.5rem;
-    border: 1px solid #eee;
-    border-radius: 5px;
-    background-color: #fff;
-}
-
-.evaluation-list li {
-    margin-bottom: 0; /* Remove default bottom margin */
-    border-bottom: 1px dashed #eee;
-    padding: 0.75rem 1rem;
-    font-size: 0.85rem;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    line-height: 1.6;
+    transition: background-color 0.3s, color 0.3s;
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+header {
+    background-color: var(--header-bg);
+    color: var(--header-text);
+    padding: 1rem 2rem;
+    display: flex;
     justify-content: space-between;
     align-items: center;
+    border-bottom: 1px solid var(--border-color);
 }
 
-.evaluation-list li:last-child {
-    border-bottom: none;
+header h1 {
+    font-size: 1.8rem;
 }
 
-.evaluation-list .question-text {
+main {
+    flex: 1; /* Takes up remaining space */
+    padding: 2rem;
+    max-width: 1000px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+section {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+body.dark-mode section {
+     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+h2, h3, h4 {
+    color: var(--accent-color);
+    margin-bottom: 1rem;
+}
+
+footer {
+    text-align: center;
+    padding: 1rem;
+    margin-top: 2rem;
+    background-color: var(--header-bg);
+    color: var(--header-text);
+    border-top: 1px solid var(--border-color);
+    font-size: 0.9rem;
+}
+
+/* --- Form Styles --- */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+label {
+    display: block;
+    margin-bottom: 0.5rem;
     font-weight: bold;
-    color: #333;
-    margin-bottom: 0.3rem;
-    width: 100%; /* Take full width initially */
 }
 
-.evaluation-list .metric-item {
-    margin-right: 15px; /* Space between metrics */
-    white-space: nowrap; /* Prevent metric labels from wrapping */
-    color: #555;
+input[type="text"],
+input[type="number"],
+input[type="file"],
+select,
+textarea {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--input-border);
+    border-radius: 4px;
+    background-color: var(--input-bg);
+    color: var(--text-color);
+    font-size: 1rem;
 }
 
-.evaluation-list .metric-item .pass {
-    color: #198754; /* Bootstrap success green */
+input[type="file"] {
+    padding: 0.5rem; /* Adjust padding for file input */
+}
+
+textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+button {
+    background-color: var(--button-bg);
+    color: var(--button-text);
+    border: none;
+    padding: 0.8rem 1.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
     font-weight: bold;
-}
-.evaluation-list .metric-item .fail {
-    color: #dc3545; /* Bootstrap danger red */
-    font-weight: bold;
-}
-
-
-/* Collapsible Content Styling */
-.collapsible-content {
+    transition: background-color 0.2s ease;
     margin-top: 1rem;
-    /* REMOVED display: none; - Bootstrap handles this */
-    /* Styles below apply when the content is shown */
-    border-top: 1px solid #eee;
-    padding-top: 1rem;
 }
 
-/* Optional: Style the button's arrow */
-.arrow {
+button:hover, button:focus {
+    background-color: var(--button-hover-bg);
+    outline: none;
+}
+
+button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+body.dark-mode button:disabled {
+    background-color: #555;
+}
+
+
+/* --- Results & Status --- */
+#status-message {
+    padding: 1rem;
+    background-color: var(--pre-bg);
+    border-radius: 4px;
+    margin-bottom: 1rem;
+}
+
+#progress-bar-container {
+    width: 100%;
+    background-color: var(--progress-bar-bg);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+    height: 20px; /* Added height */
+
+}
+
+#progress-bar {
+    width: 0%;
+    height: 100%; /* Changed to 100% */
+    background-color: var(--progress-bar-fill);
+    text-align: center;
+    line-height: 20px; /* Match height */
+    color: var(--button-text); /* Make text visible */
+    font-size: 0.8rem;
+    transition: width 0.4s ease;
+    border-radius: 4px; /* Added */
+}
+
+
+pre {
+    background-color: var(--pre-bg);
+    padding: 1rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre-wrap; /* Allow wrapping */
+    word-wrap: break-word; /* Break long words */
+    font-family: monospace;
+    font-size: 0.95rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border-color);
+}
+
+#per-question-evaluation div {
+    border: 1px dashed var(--border-color);
+    padding: 0.8rem;
+    margin-bottom: 0.8rem;
+    border-radius: 4px;
+}
+
+#per-question-evaluation strong {
+    color: var(--accent-color);
+}
+
+#error-message {
+    color: var(--error-color);
+    font-weight: bold;
+}
+
+/* --- Image Slideshow --- */
+#image-slideshow-section {
+    text-align: center;
+}
+
+#image-container {
+    margin-bottom: 1rem;
+    position: relative; /* Needed for potential overlay/spinner */
+    min-height: 100px; /* Prevent collapse while loading */
+}
+
+#image-container img {
+    max-width: 100%;
+    max-height: 60vh; /* Limit image height */
+    border: 1px solid var(--image-border);
+    border-radius: 4px;
+    display: block; /* Remove extra space below image */
+    margin: 0 auto; /* Center the image */
+}
+
+#image-nav button {
+    background-color: var(--nav-button-bg);
+    color: var(--button-text);
+    padding: 0.5rem 1rem;
+    margin: 0 0.5rem;
+}
+
+#image-nav button:hover {
+    background-color: var(--nav-button-hover);
+}
+
+#image-counter {
     display: inline-block;
-    margin-left: 5px;
-    transition: transform 0.2s ease-in-out;
-    /* You can add more styles or use an icon font */
+    margin: 0 1rem;
+    font-weight: bold;
 }
 
-
-/* Form Elements */
-textarea#feedback-input {
-    height: 150px; /* Set default height for feedback box */
+/* --- Theme Toggle Button --- */
+#theme-toggle {
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    font-size: 1.5rem; /* Adjust icon size */
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+    color: var(--text-color);
+    line-height: 38px; /* Center icon vertically */
+    text-align: center;
+    padding: 0; /* Reset padding */
+    margin: 0; /* Reset margin */
 }
 
-/* Loading Spinner */
-.spinner-border-sm {
-    width: 1rem;
-    height: 1rem;
+#theme-toggle:hover {
+    background-color: var(--accent-color);
+    border-color: var(--accent-color);
+    color: var(--button-text);
 }
 
-/* (Keep any previous metric-table styles if needed, though per-question is new) */
-/* .metric-table th, .metric-table td { text-align: left; padding: 0.5rem; } */
-/* .metric-table th { width: 120px; } */
+body.dark-mode #theme-toggle {
+   /* Optional: style toggle differently in dark mode */
+}
+
+/* --- Responsiveness --- */
+@media (max-width: 768px) {
+    header {
+        flex-direction: column;
+        text-align: center;
+    }
+    header h1 {
+        margin-bottom: 0.5rem;
+    }
+    #theme-toggle {
+        margin-top: 0.5rem;
+    }
+    main {
+        padding: 1rem;
+    }
+    .form-grid {
+        grid-template-columns: 1fr; /* Stack form elements */
+    }
+}

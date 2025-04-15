@@ -66,6 +66,7 @@ TEMP_UPLOAD_DIR = Path("temp_uploads")
 RESULTS_DIR = Path("results")
 FINAL_RESULTS_DIR = Path("final_results")
 EXTRACTED_IMAGES_DIR = Path("extracted_images")
+STATIC_DIR = Path("static") # Define static directory
 
 # API Timeouts and Polling
 DATALAB_POST_TIMEOUT = 60
@@ -158,11 +159,19 @@ except Exception as e:
 
 # --- FastAPI App Setup ---
 app = FastAPI(title="Semantic PDF Question Generator")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Mount static files (CSS, JS)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# Mount extracted images - *** THIS IS THE FIX FOR 404 ERRORS ***
+# The path "/extracted_images" matches the base of the URLs generated later.
+# The directory EXTRACTED_IMAGES_DIR is where the files actually are.
+app.mount("/extracted_images", StaticFiles(directory=EXTRACTED_IMAGES_DIR), name="extracted_images")
+
 templates = Jinja2Templates(directory="templates")
 
 # Ensure necessary directories exist
-for dir_path in [TEMP_UPLOAD_DIR, RESULTS_DIR, FINAL_RESULTS_DIR, EXTRACTED_IMAGES_DIR, PROMPT_DIR]:
+for dir_path in [TEMP_UPLOAD_DIR, RESULTS_DIR, FINAL_RESULTS_DIR, EXTRACTED_IMAGES_DIR, PROMPT_DIR, STATIC_DIR / "css", STATIC_DIR / "js"]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 # Check for mandatory prompt files
@@ -184,7 +193,7 @@ class JobResultData(BaseModel):
     retrieved_context_preview: Optional[str] = None
     extracted_markdown: Optional[str] = None
     initial_questions: Optional[str] = None # Questions generated before feedback
-    image_paths: Optional[List[str]] = None # <<< Added for slideshow
+    image_paths: Optional[List[str]] = None # Image URLs
 
 class Job(BaseModel):
     job_id: str
@@ -204,7 +213,7 @@ class RegenerationRequest(BaseModel):
 #  embed_chunks, upsert_to_qdrant, fill_placeholders, get_gemini_response,
 #  find_topics_and_generate_hypothetical_text, search_results_from_qdrant,
 #  generate_initial_questions, parse_questions, evaluate_single_question_qsts,
-#  evaluate_single_question_qualitative)
+#  evaluate_single_question_qualitative, cleanup_job_files)
 # Ensure logging includes job_id where appropriate.
 
 def generate_description_for_image(image_path, figure_caption=""):
@@ -523,11 +532,23 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
             elif candidate.get('finishReason'):
                  reason = candidate['finishReason']
                  # ... safety ratings check ...
-                 return f"Error: Generation stopped by Gemini - {reason}"
+                 # Consider adding safety rating feedback if available
+                 safety_ratings = candidate.get('safetyRatings', [])
+                 block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') != 'NEGLIGIBLE'])
+                 if block_details:
+                     return f"Error: Generation stopped by Gemini - {reason} (Safety concerns: {block_details})"
+                 else:
+                     return f"Error: Generation stopped by Gemini - {reason}"
             else: return "Error: Could not extract text from Gemini response structure."
         elif response_data.get('promptFeedback', {}).get('blockReason'):
              block_reason = response_data['promptFeedback']['blockReason']
-             return f"Error: Prompt blocked by Gemini - {block_reason}"
+             # Include safety ratings details if available in prompt feedback
+             safety_ratings = response_data['promptFeedback'].get('safetyRatings', [])
+             block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') != 'NEGLIGIBLE'])
+             if block_details:
+                 return f"Error: Prompt blocked by Gemini - {block_reason} (Safety concerns: {block_details})"
+             else:
+                 return f"Error: Prompt blocked by Gemini - {block_reason}"
         else: return f"Error: Unexpected Gemini API response format: {response_data}"
 
     except requests.exceptions.Timeout: return "Error: Gemini API request timed out."
@@ -646,7 +667,8 @@ def evaluate_single_question_qualitative(job_id: str, question: str, context: st
             return results
 
         try:
-            cleaned_response = re.sub(r"```json\s*|\s*```", "", response_text).strip()
+            # Try to clean common markdown code blocks before parsing JSON
+            cleaned_response = re.sub(r"^```json\s*|\s*```$", "", response_text.strip(), flags=re.MULTILINE)
             eval_results = json.loads(cleaned_response)
             if not isinstance(eval_results, dict): raise ValueError("LLM response is not a JSON object.")
             for metric in QUALITATIVE_METRICS:
@@ -709,24 +731,35 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
     try:
         # STEP 1: Process PDFs
         all_saved_images_map = {} # Collect from all docs
+        job_image_dir = Path(EXTRACTED_IMAGES_DIR) / job_id # Base dir for this job's images
+
         for i, file_path_str in enumerate(file_paths):
-            # ... (Keep the loop logic from previous version: call_datalab, save_images, process_markdown, hierarchical_chunk, embed, upsert) ...
-            # ... Ensure it appends to all_final_markdown, processed_document_ids, and all_saved_images_map ...
             file_path = Path(file_path_str)
             if not file_path.exists(): continue
             job_storage[job_id]["message"] = f"Processing file {i+1}/{len(file_paths)}: {file_path.name}..."
-            base_name, _ = os.path.splitext(file_path.name)
+            # Sanitize base name for directory creation
+            safe_base_name = "".join([c if c.isalnum() or c in ('-', '_') else '_' for c in file_path.stem])
             document_id = str(uuid.uuid4())
             try:
                 data = call_datalab_marker(file_path)
                 markdown_text = data.get("markdown", "")
                 images_dict = data.get("images", {})
-                images_folder = EXTRACTED_IMAGES_DIR / job_id / base_name
-                saved_images = save_extracted_images(images_dict, images_folder)
+                # Save images into a subdirectory named after the sanitized PDF name
+                doc_images_folder = job_image_dir / safe_base_name
+                saved_images = save_extracted_images(images_dict, doc_images_folder)
                 all_saved_images_map.update(saved_images) # Add to overall map
+
+                # *** Generate URLs relative to the *mount point* ***
+                for original_name, saved_path_str in saved_images.items():
+                    saved_path = Path(saved_path_str)
+                    # URL path: /extracted_images/{job_id}/{safe_base_name}/{safe_img_name}
+                    relative_path_url = f"{job_id}/{safe_base_name}/{saved_path.name}"
+                    url = f"/extracted_images/{relative_path_url.replace(os.sep, '/')}"
+                    saved_image_paths.append(url)
+
                 final_markdown = process_markdown(markdown_text, saved_images, job_id)
                 all_final_markdown += f"\n\n## --- Document: {file_path.name} ---\n\n" + final_markdown
-                output_markdown_path = FINAL_RESULTS_DIR / f"{job_id}_{base_name}_final.md"
+                output_markdown_path = FINAL_RESULTS_DIR / f"{job_id}_{safe_base_name}_final.md"
                 output_markdown_path.parent.mkdir(parents=True, exist_ok=True)
                 output_markdown_path.write_text(final_markdown, encoding="utf-8")
 
@@ -741,23 +774,14 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
                         processed_document_ids.append(document_id)
                 logger.info(f"[{job_id}] Finished processing {file_path.name}.")
             except Exception as e:
-                # Use f-string formatting correctly
                 error_message = f"Error during processing of {file_path.name}: {e}"
                 logger.error(error_message, exc_info=True)
                 raise Exception(error_message) # Re-raise to stop job
 
         if not processed_document_ids: raise ValueError("No documents successfully processed.")
 
-        # Get list of image paths relative to static dir for frontend
-        # Assuming static files are served from root URL path /static/
-        base_image_dir = Path(EXTRACTED_IMAGES_DIR) / job_id
-        # Use Path objects and make relative URLs
-        saved_image_urls = [f"/extracted_images/{job_id}/{p.relative_to(base_image_dir)}"
-                            for p in base_image_dir.rglob('*') if p.is_file()]
-        # Convert Path separators to URL slashes if needed (though FastAPI handles this)
-        saved_image_urls = [url.replace('\\', '/') for url in saved_image_urls]
-
-        job_storage[job_id]["image_paths"] = saved_image_urls # Store URLs
+        # Store the generated image URLs (already collected in saved_image_paths)
+        job_storage[job_id]["image_paths"] = saved_image_paths
 
         # STEP 2: Generate Hypothetical Text & Search Qdrant
         job_storage[job_id]["message"] = "Generating hypothetical text..."
@@ -772,8 +796,6 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
             session_id_filter=session_id, document_ids_filter=processed_document_ids
         )
         if not search_results: raise ValueError("No relevant context found in vector database.")
-        # context_parts = [f"---\n**Context Snippet {i+1}** (Source: {r.payload.get('source', 'N/A')}, Score: {r.score:.3f})\n{r.payload.get('text', 'N/A')}\n---" for i, r in enumerate(search_results)]
-        # retrieved_context = "\n\n".join(context_parts) # Combine context
         retrieved_context = "\n\n".join([r.payload.get('text', 'N/A') for r in search_results]) # Simpler combination for eval
         retrieved_context_preview = "\n\n".join([f"---\n**Context Snippet {i+1}** (Source: {r.payload.get('source', 'N/A')}, Score: {r.score:.3f})\n{r.payload.get('text', 'N/A')[:300]}...\n---" for i, r in enumerate(search_results[:3])]) # Preview top 3
 
@@ -790,7 +812,7 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
             "extracted_markdown": all_final_markdown.strip(),
             "initial_questions": initial_questions,
             "retrieved_context_preview": retrieved_context_preview, # Show preview
-            "image_paths": saved_image_urls, # Add image URLs
+            "image_paths": saved_image_paths, # Add image URLs
             "generated_questions": None, "evaluation_feedback": None, "per_question_evaluation": None,
         }
         logger.info(f"[{job_id}] Job awaiting user feedback.")
@@ -800,10 +822,10 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
         job_storage[job_id]["status"] = "error"
         job_storage[job_id]["message"] = f"An error occurred: {e}"
         if "result" in job_storage[job_id]: job_storage[job_id]["result"] = None
-        # Do not cleanup files here, let the final cleanup handle it
-        # This ensures images/markdown might still be viewable if the error occurs late
+        # Let final cleanup handle files
 
-
+# --- run_regeneration_task function (No changes needed for this request) ---
+# (Keep the existing implementation)
 def run_regeneration_task(job_id: str, user_feedback: str):
     """Performs question evaluation, potential regeneration, and final evaluation."""
     logger.info(f"[{job_id}] Starting evaluation and regeneration task.")
@@ -833,15 +855,6 @@ def run_regeneration_task(job_id: str, user_feedback: str):
         initial_evaluation_results = []
         needs_regeneration = False
         failed_question_details = []
-
-        # Use asyncio to run evaluations concurrently (optional, can speed up LLM calls)
-        # async def evaluate_q(i, question): # Define async helper
-        #     q_eval = {"question_num": i + 1, "question_text": question}
-        #     q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
-        #     q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context) # This needs to be async if get_gemini_response becomes async
-        #     return q_eval
-        # evaluation_tasks = [evaluate_q(i, q) for i, q in enumerate(parsed_initial_questions)]
-        # initial_evaluation_results = await asyncio.gather(*evaluation_tasks) # Run concurrently if possible
 
         # --- Sequential Evaluation ---
         for i, question in enumerate(parsed_initial_questions):
@@ -899,7 +912,6 @@ def run_regeneration_task(job_id: str, user_feedback: str):
         job_data["message"] = "Evaluating final questions..."
         final_parsed_questions = parse_questions(final_questions_block)
         if not final_parsed_questions:
-            # This shouldn't happen if initial parsing worked and regen didn't fail catastrophically
             logger.error(f"[{job_id}] Could not parse final questions block! Block was: {final_questions_block[:500]}...")
             raise ValueError("Failed to parse final questions.")
 
@@ -914,27 +926,25 @@ def run_regeneration_task(job_id: str, user_feedback: str):
 
         # STEP 4: Construct Final Feedback Summary
         final_feedback_summary = f"Final evaluation summary ({len(final_parsed_questions)} questions):\n"
-        # Add summary of regeneration decision
         if regeneration_performed: final_feedback_summary += "(Questions were regenerated based on evaluation/user feedback)\n"
         elif job_data.get("regeneration_error"): final_feedback_summary += f"(Regeneration attempted but failed: {job_data['regeneration_error']})\n"
         else: final_feedback_summary += "(Initial questions met thresholds and no user feedback provided; no regeneration performed)\n"
 
-        # Add brief summary of final evaluation scores/status (similar to initial eval log)
+        # Add brief summary of final evaluation scores/status
         for res in final_evaluation_results:
             qsts_ok = res['qsts_score'] >= QSTS_THRESHOLD
             qual_ok = all(res['qualitative'].get(metric, False) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
             status = "Pass" if qsts_ok and qual_ok else "FAIL"
-            # final_feedback_summary += f"- Q{res['question_num']}: Status={status} (QSTS={res['qsts_score']:.2f}, Qual={qual_ok})\n" # Simpler summary
+            # Simpler summary for now
+            # final_feedback_summary += f"- Q{res['question_num']}: Status={status} (QSTS={res['qsts_score']:.2f}, Qual={qual_ok})\n"
 
         # STEP 5: Update Job Storage with Final Results
         job_data["status"] = "completed"
         job_data["message"] = "Processing complete."
-        # Ensure result dict exists and update it
         if "result" not in job_data: job_data["result"] = {}
         job_data["result"]["generated_questions"] = final_questions_block # Final questions
         job_data["result"]["evaluation_feedback"] = final_feedback_summary.strip() # Final feedback text
         job_data["result"]["per_question_evaluation"] = final_evaluation_results # Eval of final questions
-        # image_paths, markdown, context preview were already set in initial stage result
         job_data["result"]["image_paths"] = job_storage[job_id].get("image_paths", []) # Ensure paths are present
 
         logger.info(f"[{job_id}] Evaluation/Regeneration task completed successfully.")
@@ -943,10 +953,8 @@ def run_regeneration_task(job_id: str, user_feedback: str):
          logger.exception(f"[{job_id}] Evaluation/Regeneration task failed: {e}")
          job_data["status"] = "error"
          job_data["message"] = f"Processing failed during evaluation/regeneration: {e}"
-         # Keep existing 'result' data if possible, but mark job as error
 
     finally:
-         # Final cleanup for the job occurs here, regardless of success/error in this task
          cleanup_job_files(job_id)
          logger.info(f"[{job_id}] Regeneration task finished (Status: {job_data.get('status', 'unknown')}). Final cleanup executed.")
 
@@ -957,9 +965,6 @@ def run_regeneration_task(job_id: str, user_feedback: str):
 async def read_root(request: Request):
     """Serve the main HTML page."""
     return templates.TemplateResponse("index.html", {"request": request})
-
-# Add route to serve extracted images - IMPORTANT for frontend display
-app.mount("/static/images", StaticFiles(directory=EXTRACTED_IMAGES_DIR), name="extracted_images")
 
 
 @app.post("/start-processing", response_model=Job)
@@ -982,7 +987,7 @@ async def start_processing_endpoint(
     job_storage[job_id] = {
         "status": "pending", "message": "Validating inputs...",
         "params": {"course_name": course_name, "num_questions": num_questions, "academic_level": academic_level, "taxonomy_level": taxonomy_level, "topics_list": topics_list, "major": major, "retrieval_limit": retrieval_limit, "similarity_threshold": similarity_threshold},
-        "result": {}, "temp_file_paths": []
+        "result": {}, "temp_file_paths": [], "image_paths": [] # Initialize image paths
     }
     try:
         if not files: raise HTTPException(status_code=400, detail="No files uploaded.")
