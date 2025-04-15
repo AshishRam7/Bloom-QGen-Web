@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic PDF Question Generator</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+     <style>
+        body { padding-top: 20px; padding-bottom: 60px; background-color: #f8f9fa; }
+        .container { max-width: 960px; }
+        .card { margin-bottom: 20px; }
+        .section-box {
+            background-color: #fff; border: 1px solid #dee2e6; border-radius: .375rem;
+            padding: 1.5rem; margin-top: 20px;
+        }
+        .section-box h4, .section-box h5 { margin-top: 0; }
+        #markdown-content, #initial-questions-content, #final-questions-content { /* Added final questions */
+             white-space: pre-wrap; word-wrap: break-word;
+             max-height: 40vh; overflow-y: auto; display: block;
+             background-color: #f8f9fa; border: 1px solid #ced4da; padding: 10px; border-radius: 4px; font-family: monospace;
+        }
+        .evaluation-details { font-size: 0.9em; color: #6c757d; }
+        .evaluation-details strong { color: #495057; }
+        .evaluation-list { list-style-type: none; padding-left: 0; }
+        .evaluation-list li { margin-bottom: 0.5rem; border-bottom: 1px dashed #eee; padding-bottom: 0.5rem; }
+        .evaluation-list li:last-child { border-bottom: none; }
+        textarea#feedback-input { height: 150px; }
+        .spinner-border-sm { width: 1rem; height: 1rem; }
+        .metric-table th, .metric-table td { text-align: left; padding: 0.5rem; }
+        .metric-table th { width: 120px; }
+        .feedback-section { margin-top: 1rem; font-style: italic; color: #6c757d; white-space: pre-wrap; }
+        .collapsible-content { margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;} /* Removed display: none; Bootstrap handles this */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="text-center mb-4">
+            <img src="https://via.placeholder.com/150x80?text=QGen" alt="Logo" class="mb-2"> <!-- Placeholder Logo -->
+            <h2>AI-Powered Semantic Question Generator</h2>
+            <p class="lead">Upload PDFs, configure parameters, generate, and refine educational questions.</p>
+        </div>
+
+        <!-- Input Form Card -->
+        <div class="card shadow-sm">
+            <div class="card-header">
+                Input Parameters & File Upload
+            </div>
+            <div class="card-body">
+                <form id="upload-form" enctype="multipart/form-data">
+                    <!-- Basic Parameters -->
+                    <div class="row g-3 mb-3">
+                         <div class="col-md-6">
+                            <label for="course_name" class="form-label">Course Name</label>
+                            <input type="text" class="form-control" id="course_name" name="course_name" required placeholder="e.g., Introduction to AI">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="major" class="form-label">Major/Field</label>
+                            <input type="text" class="form-control" id="major" name="major" required placeholder="e.g., Computer Science">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="academic_level" class="form-label">Academic Level</label>
+                            <select class="form-select" id="academic_level" name="academic_level" required>
+                                <option selected disabled value="">Choose...</option>
+                                <option value="undergraduate">Undergraduate</option>
+                                <option value="graduate">Graduate</option>
+                                <option value="professional">Professional</option>
+                                <option value="high school">High School</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="taxonomy_level" class="form-label">Bloom's Taxonomy Level</label>
+                            <select class="form-select" id="taxonomy_level" name="taxonomy_level" required>
+                                <option selected disabled value="">Choose...</option>
+                                <option value="Remember">Remember</option>
+                                <option value="Understand">Understand</option>
+                                <option value="Apply">Apply</option>
+                                <option value="Analyze">Analyze</option>
+                                <option value="Evaluate">Evaluate</option>
+                                <option value="Create">Create</option>
+                            </select>
+                        </div>
+                         <div class="col-md-6">
+                            <label for="num_questions" class="form-label">Number of Questions</label>
+                            <input type="number" class="form-control" id="num_questions" name="num_questions" required min="1" max="50" value="10">
+                        </div>
+                        <div class="col-md-6">
+                             <label for="topics_list" class="form-label">Key Topics (comma-separated)</label>
+                            <input type="text" class="form-control" id="topics_list" name="topics_list" required placeholder="e.g., Search algorithms, Neural Networks">
+                        </div>
+                    </div>
+
+                    <!-- Advanced Options -->
+                    <div class="mb-3">
+                        <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#advancedOptions" aria-expanded="false" aria-controls="advancedOptions">
+                            Advanced Retrieval Options <span class="arrow">▼</span>
+                        </button>
+                        <div class="collapse collapsible-content" id="advancedOptions">
+                            <div class="p-3 border rounded bg-light">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label for="retrieval_limit" class="form-label">Retrieval Limit</label>
+                                        <input type="number" class="form-control" id="retrieval_limit" name="retrieval_limit" value="15" min="1" max="50">
+                                        <div class="form-text">Max number of context chunks to retrieve.</div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="similarity_threshold" class="form-label">Similarity Threshold</label>
+                                        <input type="number" class="form-control" id="similarity_threshold" name="similarity_threshold" value="0.3" min="0.0" max="1.0" step="0.05">
+                                         <div class="form-text">Minimum similarity score (0.0 to 1.0) for retrieved chunks.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- File Upload -->
+                    <div class="mb-3">
+                        <label for="files" class="form-label">Upload PDF Documents</label>
+                        <input class="form-control" type="file" id="files" name="files" accept=".pdf" multiple required>
+                        <div class="form-text">Select one or more PDF files. Max size per file: 50MB (Example limit).</div>
+                    </div>
+
+                    <hr class="my-4">
+                    <button type="submit" class="btn btn-primary w-100 btn-lg" id="submit-button">
+                        Generate Questions
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Status Area -->
+        <div id="status-area" class="mt-4" style="display: none;">
+             <div class="alert alert-info d-flex align-items-center" role="alert">
+                 <div class="spinner-border text-primary me-3" role="status" id="loading-spinner">
+                    <span class="visually-hidden">Loading...</span>
+                 </div>
+                 <div id="status-message">Processing...</div>
+             </div>
+        </div>
+
+         <!-- Error Area -->
+         <div id="error-area" class="mt-4" style="display: none;">
+             <div class="alert alert-danger" role="alert">
+                 <strong>Error:</strong> <span id="error-message"></span>
+             </div>
+         </div>
+
+         <!-- Feedback Stage Area -->
+        <div id="feedback-stage-area" class="section-box" style="display: none;">
+            <h4>Initial Generation Complete</h4>
+            <p>Review the extracted content and initial questions below. Provide feedback if you'd like to refine the questions, then click Regenerate.</p>
+
+            <!-- Extracted Markdown (Collapsible) -->
+            <div class="mb-3">
+                 <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#markdownDisplay" aria-expanded="false" aria-controls="markdownDisplay">
+                    Show/Hide Extracted Markdown <span class="arrow">▼</span>
+                </button>
+                 <div class="collapse collapsible-content" id="markdownDisplay">
+                     <div class="p-3 border rounded bg-light">
+                        <h5>Extracted Markdown Content:</h5>
+                        <pre id="markdown-content">Loading markdown...</pre>
+                     </div>
+                 </div>
+            </div>
+
+             <!-- Initial Questions -->
+            <div class="mb-3">
+                <h5>Initial Questions:</h5>
+                <pre id="initial-questions-content">Loading initial questions...</pre>
+            </div>
+
+            <!-- Feedback Input -->
+            <div class="mb-3">
+                 <label for="feedback-input" class="form-label"><h5>Your Feedback (Optional):</h5></label>
+                 <textarea class="form-control" id="feedback-input" rows="5" placeholder="Enter specific feedback here if you want changes. Example: 'Make question 3 more analytical.' or 'Focus questions more on the application of algorithm X.' If no feedback is provided, the initial questions will be finalized after evaluation."></textarea>
+                 <div class="form-text">Provide detailed feedback to guide regeneration, or leave blank to accept initial results after evaluation.</div>
+            </div>
+
+            <!-- Regeneration Button -->
+            <button type="button" class="btn btn-success w-100" id="regenerate-button">
+                Evaluate & Finalize / Regenerate
+            </button>
+        </div>
+
+
+        <!-- Final Results Area -->
+        <div id="results-area" class="section-box" style="display: none;">
+            <h4 id="results-title">Final Results</h4> <!-- Title can change -->
+             <div id="results-content">
+                 <!-- Final results injected here by JS -->
+                 <h5>Final Questions:</h5>
+                 <pre id="final-questions-content">Loading final questions...</pre>
+                 <h5 style="margin-top: 1.5rem;">Evaluation Summary:</h5>
+                 <div id="final-evaluation-feedback" class="feedback-section">Loading feedback...</div>
+                 <h5 style="margin-top: 1.5rem;">Per-Question Details:</h5>
+                 <div id="final-per-question-evaluation" class="evaluation-details">Loading details...</div>
+                 <h5 style="margin-top: 1.5rem;">Context Preview:</h5>
+                 <pre id="final-context-preview" style="font-size: 0.8rem; color: #6c757d;">Loading context preview...</pre>
+            </div>
+        </div>
+
+    </div> <!-- /container -->
+
+    <!-- Bootstrap JS Bundle (includes Popper) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+    <!-- Custom JS -->
+    <script src="/static/js/script.js"></script>
+
+    <script>
+        // Simple script to toggle arrow character for collapse buttons
+        document.querySelectorAll('[data-bs-toggle="collapse"]').forEach(button => {
+            button.addEventListener('click', function () {
+                const arrow = this.querySelector('.arrow');
+                if (arrow) {
+                    // Check the state *after* the click event initiates the collapse/expand
+                    setTimeout(() => {
+                         const targetId = this.getAttribute('data-bs-target');
+                         const targetElement = document.querySelector(targetId);
+                         if (targetElement && targetElement.classList.contains('show')) {
+                             arrow.textContent = '▲';
+                         } else {
+                             arrow.textContent = '▼';
+                         }
+                    }, 10); // Small delay to allow Bootstrap JS to update classes
+                }
+            });
+        });
+    </script>
+</body>
+</html>

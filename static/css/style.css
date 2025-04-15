@@ -1,0 +1,159 @@
+/* --- static/css/style.css --- */
+
+/* Basic Layout & Typography */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    padding-top: 20px;
+    padding-bottom: 60px; /* Add padding at bottom */
+    background-color: #f8f9fa; /* Light grey background */
+}
+
+.container {
+    max-width: 960px; /* Limit main content width */
+}
+
+/* Cards and Section Styling */
+.card {
+    margin-bottom: 20px;
+    border: 1px solid #dee2e6;
+}
+
+.section-box {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: .375rem; /* Standard Bootstrap radius */
+    padding: 1.5rem;
+    margin-top: 20px;
+}
+
+/* Use consistent heading margins within sections */
+.section-box h4, .section-box h5 {
+    margin-top: 0; /* Remove default top margin */
+    margin-bottom: 1rem; /* Add space below headings */
+    color: #0d6efd; /* Bootstrap primary blue */
+}
+
+/* Preformatted Text Styling (Markdown, Questions) */
+#markdown-content,
+#initial-questions-content,
+#final-questions-content,
+#final-context-preview { /* Apply to all pre elements */
+    white-space: pre-wrap;      /* Wrap lines */
+    word-wrap: break-word;     /* Break long words */
+    max-height: 45vh;          /* Limit height and enable scroll */
+    overflow-y: auto;
+    display: block;            /* Ensure it behaves like a block */
+    background-color: #e9ecef; /* Light grey background */
+    border: 1px solid #ced4da; /* Subtle border */
+    padding: 15px;             /* More padding */
+    border-radius: 4px;        /* Slight rounding */
+    font-family: Consolas, 'Courier New', monospace; /* Monospace font */
+    font-size: 0.9rem;         /* Slightly smaller font */
+    line-height: 1.5;          /* Better line spacing */
+}
+
+#final-context-preview {
+    font-size: 0.8rem; /* Make context preview smaller */
+    color: #6c757d;   /* Muted color for context */
+    background-color: #f8f9fa; /* Match body background? Or keep light grey */
+}
+
+
+/* Feedback and Evaluation Details Styling */
+.feedback-section {
+    margin-top: 1rem;
+    font-style: italic;
+    color: #5a5a5a; /* Darker grey for readability */
+    white-space: pre-wrap; /* Preserve formatting */
+    background-color: #f8f9fa; /* Light background */
+    border-left: 3px solid #0dcaf0; /* Info color accent */
+    padding: 10px 15px;
+    border-radius: 3px;
+}
+
+.evaluation-details {
+    font-size: 0.9em;
+    color: #6c757d;
+    margin-top: 1rem;
+}
+
+/* Per-Question Evaluation List */
+.evaluation-list {
+    list-style-type: none;
+    padding-left: 0;
+    margin-top: 0.5rem;
+    border: 1px solid #eee;
+    border-radius: 5px;
+    background-color: #fff;
+}
+
+.evaluation-list li {
+    margin-bottom: 0; /* Remove default bottom margin */
+    border-bottom: 1px dashed #eee;
+    padding: 0.75rem 1rem;
+    font-size: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.evaluation-list li:last-child {
+    border-bottom: none;
+}
+
+.evaluation-list .question-text {
+    font-weight: bold;
+    color: #333;
+    margin-bottom: 0.3rem;
+    width: 100%; /* Take full width initially */
+}
+
+.evaluation-list .metric-item {
+    margin-right: 15px; /* Space between metrics */
+    white-space: nowrap; /* Prevent metric labels from wrapping */
+    color: #555;
+}
+
+.evaluation-list .metric-item .pass {
+    color: #198754; /* Bootstrap success green */
+    font-weight: bold;
+}
+.evaluation-list .metric-item .fail {
+    color: #dc3545; /* Bootstrap danger red */
+    font-weight: bold;
+}
+
+
+/* Collapsible Content Styling */
+.collapsible-content {
+    margin-top: 1rem;
+    /* REMOVED display: none; - Bootstrap handles this */
+    /* Styles below apply when the content is shown */
+    border-top: 1px solid #eee;
+    padding-top: 1rem;
+}
+
+/* Optional: Style the button's arrow */
+.arrow {
+    display: inline-block;
+    margin-left: 5px;
+    transition: transform 0.2s ease-in-out;
+    /* You can add more styles or use an icon font */
+}
+
+
+/* Form Elements */
+textarea#feedback-input {
+    height: 150px; /* Set default height for feedback box */
+}
+
+/* Loading Spinner */
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+/* (Keep any previous metric-table styles if needed, though per-question is new) */
+/* .metric-table th, .metric-table td { text-align: left; padding: 0.5rem; } */
+/* .metric-table th { width: 120px; } */

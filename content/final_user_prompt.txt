@@ -1,0 +1,8 @@
+{user_prompt}
+
+These are the relevant content retrieved from a study material for the course:
+{content}
+
+Based on the above information, generate {num_questions} questions for the {course_name} course strictly aligning to the {taxonomy} level of the Bloom's taxonomy level. The description of the {taxonomy} level is: {blooms_taxonomy_descriptions}
+Ensure that the questions match the standard of a {major} examination for the {course_name} for {academic_level} student. The questions should
+also be strictly based on/from the content in the retrieved context. 

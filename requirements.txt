@@ -1,0 +1,12 @@
+requests
+python-dotenv
+Pillow
+nltk
+qdrant-client
+sentence-transformers
+moondream
+rouge-score
+bert-score
+bleurt-pytorch
+torch
+transformers
