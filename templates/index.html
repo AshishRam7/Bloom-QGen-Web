@@ -1,10 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en">   
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bloom QGen Web</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Link to a modern Google Font (Poppins) -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css"">
 </head>
 <body>
     <header>
@@ -48,7 +50,7 @@
                         <label for="topics_list">Topics (comma-separated):</label>
                         <input type="text" id="topics_list" name="topics_list" required value="Dynamic Programming, Graph Theory, Greedy Algorithms">
                     </div>
-                     <div>
+                    <div>
                         <label for="major">Major:</label>
                         <input type="text" id="major" name="major" value="Computer Science" required>
                     </div>
@@ -115,13 +117,13 @@
                     <span id="image-counter"></span>
                     <button id="next-image">Next</button>
                 </div>
-                 <div id="no-images-message" style="display: none;">No images were extracted from the PDF(s).</div>
+                <div id="no-images-message" style="display: none;">No images were extracted from the PDF(s).</div>
             </div>
 
-             <div id="markdown-section" style="display: none;">
+            <div id="markdown-section" style="display: none;">
                 <h3>Extracted Markdown</h3>
                 <pre id="markdown-content"></pre>
-             </div>
+            </div>
         </section>
 
     </main>
