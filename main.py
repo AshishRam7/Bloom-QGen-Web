@@ -24,6 +24,10 @@ from pydantic import BaseModel, Field
 # Text Processing & Embeddings
 from PIL import Image
 import nltk
+# Ensure required NLTK data is downloaded (run this once if needed)
+# nltk.download('stopwords')
+# nltk.download('wordnet')
+# nltk.download('punkt')
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sentence_transformers import SentenceTransformer
@@ -46,12 +50,11 @@ DATALAB_API_KEY = os.environ.get("DATALAB_API_KEY")
 DATALAB_MARKER_URL = os.environ.get("DATALAB_MARKER_URL")
 MOONDREAM_API_KEY = os.environ.get("MOONDREAM_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") # Optional, handle if None later
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # --- Check Essential Variables ---
 if not all([DATALAB_API_KEY, DATALAB_MARKER_URL, MOONDREAM_API_KEY, QDRANT_URL, GEMINI_API_KEY]):
-    # Added QDRANT_API_KEY optionality check later if needed
     missing_vars = [var for var, val in {
         "DATALAB_API_KEY": DATALAB_API_KEY, "DATALAB_MARKER_URL": DATALAB_MARKER_URL,
         "MOONDREAM_API_KEY": MOONDREAM_API_KEY, "QDRANT_URL": QDRANT_URL,
@@ -63,8 +66,8 @@ if not all([DATALAB_API_KEY, DATALAB_MARKER_URL, MOONDREAM_API_KEY, QDRANT_URL, 
 
 # Directories
 TEMP_UPLOAD_DIR = Path("temp_uploads")
-RESULTS_DIR = Path("results")
-FINAL_RESULTS_DIR = Path("final_results")
+RESULTS_DIR = Path("results") # Keep for potential future use
+FINAL_RESULTS_DIR = Path("final_results") # Use this for final markdown outputs
 EXTRACTED_IMAGES_DIR = Path("extracted_images")
 STATIC_DIR = Path("static") # Define static directory
 
@@ -74,6 +77,8 @@ DATALAB_POLL_TIMEOUT = 30
 MAX_POLLS = 300
 POLL_INTERVAL = 3
 GEMINI_TIMEOUT = 180
+MAX_GEMINI_RETRIES = 3 # Number of retries for Gemini API calls
+GEMINI_RETRY_DELAY = 60 # Seconds to wait between Gemini retries
 
 # Qdrant Configuration
 QDRANT_COLLECTION_NAME = "markdown_docs_v3_semantic" # New collection name
@@ -81,7 +86,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 VECTOR_SIZE = 384
 
 # Gemini Configuration
-GEMINI_MODEL_NAME = "gemini-2.0-flash-lite" # Model for generation and evaluation
+GEMINI_MODEL_NAME = "gemini-1.5-flash-latest" # Model for generation and evaluation
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model_name}:{action}?key={api_key}"
 
 # Evaluation Configuration
@@ -99,6 +104,7 @@ CRITICAL_QUALITATIVE_FAILURES = {
     "TopicRelated": False, # Marking TopicRelated as critical too
     "Central": False # Marking Central as potentially critical
  }
+MAX_REGENERATION_ATTEMPTS = 3 # Maximum times to try regeneration
 
 # Prompt File Paths
 PROMPT_DIR = Path("content")
@@ -207,15 +213,6 @@ class RegenerationRequest(BaseModel):
 
 # --- Helper Functions ---
 
-# >> Include the full implementations of helper functions here <<
-# (generate_description_for_image, call_datalab_marker, save_extracted_images,
-#  process_markdown, clean_text_for_embedding, hierarchical_chunk_markdown,
-#  embed_chunks, upsert_to_qdrant, fill_placeholders, get_gemini_response,
-#  find_topics_and_generate_hypothetical_text, search_results_from_qdrant,
-#  generate_initial_questions, parse_questions, evaluate_single_question_qsts,
-#  evaluate_single_question_qualitative, cleanup_job_files)
-# Ensure logging includes job_id where appropriate.
-
 def generate_description_for_image(image_path, figure_caption=""):
     """Load an image, encode it, and query Moondream for a description."""
     try:
@@ -281,7 +278,7 @@ def call_datalab_marker(file_path: Path):
                  logger.error(f"Datalab processing failed for {file_path.name}: {err_msg}")
                  raise Exception(f"Datalab processing failed: {err_msg}")
             # Only log polling message periodically
-            if (i + 1) % 20 == 0: # Log every minute or so
+            if (i + 1) % 10 == 0: # Log every 30 seconds or so
                  logger.info(f"Polling Datalab for {file_path.name}... attempt {i+1}/{MAX_POLLS}")
         except requests.exceptions.Timeout:
              logger.warning(f"Polling Datalab timed out on attempt {i+1} for {file_path.name}. Retrying...")
@@ -498,7 +495,7 @@ def fill_placeholders(template_path: Path, output_path: Path, placeholders: Dict
         raise
 
 def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bool = False):
-    """Gets a response from the Google Gemini API, optionally expecting JSON."""
+    """Gets a response from the Google Gemini API, optionally expecting JSON, with retries."""
     if not GEMINI_API_KEY: raise ValueError("Gemini API Key not configured.")
 
     api_url = GEMINI_API_URL_TEMPLATE.format(model_name=GEMINI_MODEL_NAME, action="generateContent", api_key=GEMINI_API_KEY)
@@ -508,58 +505,114 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
         "systemInstruction": {"parts": [{"text": system_prompt}]},
          "generationConfig": {
              "temperature": 0.5 if is_json_output else 0.7,
-             "maxOutputTokens": 4096,
+             "maxOutputTokens": 4096, # Adjust as needed
+             "topP": 0.95, # Example value
+             "topK": 40,    # Example value
          }
     }
     # Only include responseMimeType if expecting JSON
     if is_json_output:
          payload["generationConfig"]["responseMimeType"] = "application/json"
 
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT)
-        response.raise_for_status()
-        response_data = response.json()
+    last_error = None
+    for attempt in range(MAX_GEMINI_RETRIES):
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT)
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            response_data = response.json()
 
-        # Robust extraction
-        if response_data.get('candidates'):
-            candidate = response_data['candidates'][0]
-            if candidate.get('content', {}).get('parts'):
-                gemini_response_text = candidate['content']['parts'][0].get('text', '')
-                finish_reason = candidate.get('finishReason', 'UNKNOWN')
-                if finish_reason not in ['STOP', 'MAX_TOKENS']: logger.warning(f"Gemini generation finished reason: {finish_reason}")
-                if gemini_response_text: return gemini_response_text.strip()
-                else: return f"Error: Gemini returned an empty response (finish reason: {finish_reason})."
-            elif candidate.get('finishReason'):
-                 reason = candidate['finishReason']
-                 # ... safety ratings check ...
-                 # Consider adding safety rating feedback if available
-                 safety_ratings = candidate.get('safetyRatings', [])
-                 block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') != 'NEGLIGIBLE'])
-                 if block_details:
-                     return f"Error: Generation stopped by Gemini - {reason} (Safety concerns: {block_details})"
-                 else:
-                     return f"Error: Generation stopped by Gemini - {reason}"
-            else: return "Error: Could not extract text from Gemini response structure."
-        elif response_data.get('promptFeedback', {}).get('blockReason'):
-             block_reason = response_data['promptFeedback']['blockReason']
-             # Include safety ratings details if available in prompt feedback
-             safety_ratings = response_data['promptFeedback'].get('safetyRatings', [])
-             block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') != 'NEGLIGIBLE'])
-             if block_details:
-                 return f"Error: Prompt blocked by Gemini - {block_reason} (Safety concerns: {block_details})"
-             else:
-                 return f"Error: Prompt blocked by Gemini - {block_reason}"
-        else: return f"Error: Unexpected Gemini API response format: {response_data}"
+            # --- Robust response extraction ---
+            if response_data.get('candidates'):
+                candidate = response_data['candidates'][0]
+                if candidate.get('content', {}).get('parts'):
+                    gemini_response_text = candidate['content']['parts'][0].get('text', '')
+                    finish_reason = candidate.get('finishReason', 'UNKNOWN')
+                    if finish_reason not in ['STOP', 'MAX_TOKENS']:
+                        logger.warning(f"Gemini generation finished with reason: {finish_reason}. Safety: {candidate.get('safetyRatings')}")
+                    if gemini_response_text:
+                        return gemini_response_text.strip()
+                    else:
+                        # Handle case where response is empty but not blocked
+                        logger.warning(f"Gemini returned an empty response. Finish reason: {finish_reason}. Candidate: {candidate}")
+                        return f"Error: Gemini returned an empty response (finish reason: {finish_reason})."
 
-    except requests.exceptions.Timeout: return "Error: Gemini API request timed out."
-    except requests.exceptions.RequestException as e:
-        err_detail = str(e); response_text = ""
-        if e.response is not None: response_text = e.response.text[:500]
-        logger.error(f"Error calling Gemini API: {err_detail} - Response: {response_text}", exc_info=True)
-        return f"Error: Gemini API request failed - {e}"
-    except Exception as e:
-        logger.error(f"Error processing Gemini response: {e}", exc_info=True)
-        return f"Error: Failed to process Gemini response - {e}"
+                elif candidate.get('finishReason'):
+                    # Check if stopped due to safety or other issues
+                    reason = candidate['finishReason']
+                    safety_ratings = candidate.get('safetyRatings', [])
+                    blocked_by_safety = any(sr.get('probability') not in ['NEGLIGIBLE', 'LOW'] for sr in safety_ratings)
+                    if blocked_by_safety:
+                         block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') not in ['NEGLIGIBLE', 'LOW']])
+                         error_msg = f"Error: Generation stopped by Gemini - {reason} (Safety concerns: {block_details})"
+                         logger.error(error_msg)
+                         return error_msg
+                    else:
+                         # It stopped for another reason (e.g., RECITATION, OTHER)
+                         error_msg = f"Error: Generation stopped by Gemini - {reason}"
+                         logger.error(error_msg)
+                         return error_msg
+                else:
+                    # Unexpected structure within candidate
+                    logger.error(f"Could not extract text from Gemini response structure. Candidate: {candidate}")
+                    return "Error: Could not extract text from Gemini response structure."
+
+            elif response_data.get('promptFeedback', {}).get('blockReason'):
+                # The entire prompt was blocked
+                block_reason = response_data['promptFeedback']['blockReason']
+                safety_ratings = response_data['promptFeedback'].get('safetyRatings', [])
+                block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') not in ['NEGLIGIBLE', 'LOW']])
+                if block_details:
+                    error_msg = f"Error: Prompt blocked by Gemini - {block_reason} (Safety concerns: {block_details})"
+                else:
+                    error_msg = f"Error: Prompt blocked by Gemini - {block_reason}"
+                logger.error(error_msg)
+                return error_msg
+            else:
+                # Unexpected top-level response format
+                logger.error(f"Unexpected Gemini API response format: {response_data}")
+                return f"Error: Unexpected Gemini API response format."
+
+        except requests.exceptions.Timeout:
+            last_error = "Error: Gemini API request timed out."
+            logger.warning(f"{last_error} Attempt {attempt + 1}/{MAX_GEMINI_RETRIES}.")
+            if attempt + 1 < MAX_GEMINI_RETRIES:
+                time.sleep(GEMINI_RETRY_DELAY)
+            continue # Retry
+
+        except requests.exceptions.RequestException as e:
+            last_error = f"Error: Gemini API request failed - {e}"
+            response_text = ""
+            status_code = None
+            if e.response is not None:
+                response_text = e.response.text[:500] # Log beginning of response
+                status_code = e.response.status_code
+
+            # Check for rate limiting (e.g., 429 Too Many Requests)
+            # Gemini might also return specific error codes in the JSON body for rate limits,
+            # but catching 429 is a common pattern.
+            if status_code == 429:
+                logger.warning(f"Gemini rate limit hit (HTTP 429). Attempt {attempt + 1}/{MAX_GEMINI_RETRIES}. Waiting {GEMINI_RETRY_DELAY}s...")
+                if attempt + 1 < MAX_GEMINI_RETRIES:
+                    time.sleep(GEMINI_RETRY_DELAY)
+                    continue # Retry
+                else:
+                    last_error = "Error: Gemini rate limit exceeded after retries."
+                    break # Exhausted retries
+            else:
+                # Log other request errors
+                logger.error(f"Error calling Gemini API: {e} - Status Code: {status_code} - Response: {response_text}", exc_info=True)
+                # Don't retry for non-rate-limit errors immediately, return the error
+                return last_error
+
+        except Exception as e: # Catch other potential errors (like JSON parsing)
+            last_error = f"Error: Failed to process Gemini response - {e}"
+            logger.error(last_error, exc_info=True)
+            # Depending on the error, might not be retryable. Return the error.
+            return last_error
+
+    # If loop finishes without returning, it means all retries failed
+    logger.error(f"Gemini API call failed after {MAX_GEMINI_RETRIES} attempts. Last error: {last_error}")
+    return last_error # Return the last error encountered
 
 def find_topics_and_generate_hypothetical_text(job_id: str, academic_level, major, course_name, taxonomy_level, topics):
     """Generates hypothetical text based on topics using Gemini."""
@@ -604,7 +657,7 @@ def generate_initial_questions(job_id: str, retrieved_context: str, params: Dict
     """Generates the initial set of questions using Gemini."""
     logger.info(f"[{job_id}] Preparing to generate initial questions...")
     blooms = "Bloom's Levels: Remember, Understand, Apply, Analyze, Evaluate, Create." # Simpler
-    max_context_chars = 25000
+    max_context_chars = 30000 # Increased slightly, adjust based on Gemini limits
     truncated_context = retrieved_context[:max_context_chars]
     if len(retrieved_context) > max_context_chars: logger.warning(f"[{job_id}] Truncating context to {max_context_chars} chars for LLM.")
     placeholders = {"content": truncated_context, "num_questions": params['num_questions'], "course_name": params['course_name'], "taxonomy": params['taxonomy_level'], "major": params['major'], "academic_level": params['academic_level'], "topics_list": params['topics_list'], "blooms_taxonomy_descriptions": blooms }
@@ -652,14 +705,14 @@ def evaluate_single_question_qualitative(job_id: str, question: str, context: st
     results = {metric: False for metric in QUALITATIVE_METRICS}
     if not question or not context: return results
     try:
-        eval_context = context[:2000] + ("\n... [Context Truncated]" if len(context)>2000 else "")
+        eval_context = context[:4000] + ("\n... [Context Truncated]" if len(context)>4000 else "") # Increased context slightly
         placeholders = {"question": question, "context": eval_context, "criteria_list_str": ", ".join(QUALITATIVE_METRICS)}
         temp_path = TEMP_UPLOAD_DIR / f"{job_id}_qualitative_eval_prompt_{uuid.uuid4().hex[:6]}.txt" # Unique temp name
         fill_placeholders(QUALITATIVE_EVAL_PROMPT_PATH, temp_path, placeholders)
         eval_prompt = temp_path.read_text(encoding='utf-8')
         temp_path.unlink(missing_ok=True)
 
-        eval_system_prompt = "You are an AI assistant evaluating educational question quality based on context and criteria. Respond ONLY with a valid JSON object with boolean values (true/false) for each criterion."
+        eval_system_prompt = "You are an AI assistant evaluating educational question quality based on context and criteria. Respond ONLY with a single, valid JSON object with boolean values (true/false) for each criterion."
         response_text = get_gemini_response(eval_system_prompt, eval_prompt, is_json_output=True)
 
         if response_text.startswith("Error:"):
@@ -739,7 +792,9 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
             job_storage[job_id]["message"] = f"Processing file {i+1}/{len(file_paths)}: {file_path.name}..."
             # Sanitize base name for directory creation
             safe_base_name = "".join([c if c.isalnum() or c in ('-', '_') else '_' for c in file_path.stem])
-            document_id = str(uuid.uuid4())
+            if not safe_base_name: safe_base_name = f"doc_{i+1}" # Fallback if name is empty after sanitization
+            document_id = f"{job_id}_{safe_base_name}" # Use a more descriptive document_id
+
             try:
                 data = call_datalab_marker(file_path)
                 markdown_text = data.get("markdown", "")
@@ -759,9 +814,10 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
 
                 final_markdown = process_markdown(markdown_text, saved_images, job_id)
                 all_final_markdown += f"\n\n## --- Document: {file_path.name} ---\n\n" + final_markdown
-                output_markdown_path = FINAL_RESULTS_DIR / f"{job_id}_{safe_base_name}_final.md"
+                output_markdown_path = FINAL_RESULTS_DIR / f"{document_id}_final.md" # Use document_id
                 output_markdown_path.parent.mkdir(parents=True, exist_ok=True)
                 output_markdown_path.write_text(final_markdown, encoding="utf-8")
+                logger.info(f"[{job_id}] Saved final markdown for {file_path.name} to {output_markdown_path}")
 
                 if final_markdown.strip():
                     chunks = hierarchical_chunk_markdown(final_markdown, file_path.name)
@@ -824,13 +880,14 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
         if "result" in job_storage[job_id]: job_storage[job_id]["result"] = None
         # Let final cleanup handle files
 
-# --- run_regeneration_task function (No changes needed for this request) ---
-# (Keep the existing implementation)
+
 def run_regeneration_task(job_id: str, user_feedback: str):
     """Performs question evaluation, potential regeneration, and final evaluation."""
     logger.info(f"[{job_id}] Starting evaluation and regeneration task.")
     job_data = job_storage.get(job_id)
-    if not job_data: logger.error(f"[{job_id}] Task failed: Job data not found."); return
+    if not job_data:
+        logger.error(f"[{job_id}] Task failed: Job data not found.")
+        return
 
     try:
         job_data["status"] = "processing_feedback"
@@ -843,111 +900,160 @@ def run_regeneration_task(job_id: str, user_feedback: str):
         original_user_prompt_filled = prompts.get("user_prompt_content")
         system_prompt = prompts.get("system_prompt")
         params = job_data.get("params", {})
+        image_paths = job_data.get("image_paths", []) # Get image paths
 
         if not all([retrieved_context, initial_questions_block, original_user_prompt_filled, system_prompt, params]):
              raise ValueError("Missing necessary data stored from initial stage for evaluation/regeneration.")
 
-        # STEP 1: Evaluate Initial Questions
-        parsed_initial_questions = parse_questions(initial_questions_block)
-        if not parsed_initial_questions: raise ValueError("Could not parse initial questions.")
-        logger.info(f"[{job_id}] Evaluating {len(parsed_initial_questions)} initial questions.")
-
-        initial_evaluation_results = []
-        needs_regeneration = False
-        failed_question_details = []
-
-        # --- Sequential Evaluation ---
-        for i, question in enumerate(parsed_initial_questions):
-             q_eval = {"question_num": i + 1, "question_text": question}
-             q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
-             q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
-             initial_evaluation_results.append(q_eval)
-
-             # Check failure criteria
-             qsts_failed = q_eval["qsts_score"] < QSTS_THRESHOLD
-             qualitative_failed = any(not q_eval["qualitative"].get(metric, True) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False) # Fail if critical metric is False
-
-             if qsts_failed or qualitative_failed:
-                needs_regeneration = True
-                fail_reasons = []
-                if qsts_failed: fail_reasons.append(f"QSTS below threshold ({q_eval['qsts_score']:.2f} < {QSTS_THRESHOLD})")
-                if qualitative_failed:
-                     failed_metrics = [m for m, passed in q_eval["qualitative"].items() if m in CRITICAL_QUALITATIVE_FAILURES and not passed]
-                     if failed_metrics: fail_reasons.append(f"Failed critical checks: {', '.join(failed_metrics)}")
-                if fail_reasons: # Only add if there's a concrete reason
-                     failed_question_details.append(f"  - Question {i+1}: {'; '.join(fail_reasons)}")
-
-
-        # STEP 2: Decide on Regeneration and Prepare Final Questions
-        final_questions_block = initial_questions_block # Default to initial
+        # --- Regeneration Loop ---
+        current_questions_block = initial_questions_block
+        final_questions_block = initial_questions_block # Default
+        regeneration_attempts = 0
         regeneration_performed = False
-
-        if needs_regeneration or user_feedback.strip(): # Regenerate if checks failed OR user gave feedback
-            logger.info(f"[{job_id}] Regeneration triggered. AutoFail={needs_regeneration}, UserFeedback={bool(user_feedback.strip())}")
-            job_data["message"] = "Regenerating questions based on evaluation/user feedback..."
-
-            llm_feedback = "The following issues were identified in the previous attempt:\n"
-            if failed_question_details: llm_feedback += "Automatic Evaluation Failures:\n" + "\n".join(failed_question_details) + "\n"
-            else: llm_feedback += "Automatic evaluation found no critical issues, but user feedback was provided.\n"
-            if user_feedback.strip(): llm_feedback += "User Provided Feedback:\n" + user_feedback.strip() + "\n"
-            llm_feedback += "\nPlease regenerate the questions, addressing these points while adhering to all original instructions (context, Bloom's level, number of questions, topics). Ensure questions are high quality and directly based on the context."
-
-            regeneration_prompt = f"{original_user_prompt_filled}\n\n--- FEEDBACK ON PREVIOUS ATTEMPT ---\n{llm_feedback}" # Use original filled prompt + feedback
-
-            regenerated_questions_block_attempt = get_gemini_response(system_prompt, regeneration_prompt) # Use original system prompt
-
-            if regenerated_questions_block_attempt.startswith("Error:"):
-                 logger.error(f"[{job_id}] Regeneration attempt failed: {regenerated_questions_block_attempt}")
-                 # Keep initial questions, but add error note to feedback
-                 job_data["regeneration_error"] = f"Regeneration failed ({regenerated_questions_block_attempt}). Displaying initial questions."
-            else:
-                 logger.info(f"[{job_id}] Successfully regenerated questions.")
-                 final_questions_block = regenerated_questions_block_attempt # Use new questions
-                 regeneration_performed = True
-        else:
-            logger.info(f"[{job_id}] No regeneration triggered (Checks passed and no user feedback).")
-
-
-        # STEP 3: Evaluate the FINAL set of questions
-        job_data["message"] = "Evaluating final questions..."
-        final_parsed_questions = parse_questions(final_questions_block)
-        if not final_parsed_questions:
-            logger.error(f"[{job_id}] Could not parse final questions block! Block was: {final_questions_block[:500]}...")
-            raise ValueError("Failed to parse final questions.")
-
-        logger.info(f"[{job_id}] Evaluating {len(final_parsed_questions)} final questions.")
         final_evaluation_results = []
-        # --- Sequential Evaluation ---
-        for i, question in enumerate(final_parsed_questions):
-             q_eval = {"question_num": i + 1, "question_text": question}
-             q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
-             q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
-             final_evaluation_results.append(q_eval)
+        loop_exit_reason = "Initial questions met criteria or no feedback."
 
-        # STEP 4: Construct Final Feedback Summary
-        final_feedback_summary = f"Final evaluation summary ({len(final_parsed_questions)} questions):\n"
-        if regeneration_performed: final_feedback_summary += "(Questions were regenerated based on evaluation/user feedback)\n"
-        elif job_data.get("regeneration_error"): final_feedback_summary += f"(Regeneration attempted but failed: {job_data['regeneration_error']})\n"
-        else: final_feedback_summary += "(Initial questions met thresholds and no user feedback provided; no regeneration performed)\n"
+        while regeneration_attempts < MAX_REGENERATION_ATTEMPTS:
+            logger.info(f"[{job_id}] Starting evaluation cycle (Attempt {regeneration_attempts + 1}).")
+            job_data["message"] = f"Evaluating questions (Attempt {regeneration_attempts + 1})..."
 
-        # Add brief summary of final evaluation scores/status
-        for res in final_evaluation_results:
-            qsts_ok = res['qsts_score'] >= QSTS_THRESHOLD
-            qual_ok = all(res['qualitative'].get(metric, False) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
-            status = "Pass" if qsts_ok and qual_ok else "FAIL"
-            # Simpler summary for now
-            # final_feedback_summary += f"- Q{res['question_num']}: Status={status} (QSTS={res['qsts_score']:.2f}, Qual={qual_ok})\n"
+            parsed_current_questions = parse_questions(current_questions_block)
+            if not parsed_current_questions:
+                logger.error(f"[{job_id}] Failed to parse current questions block in attempt {regeneration_attempts + 1}. Block: {current_questions_block[:200]}...")
+                loop_exit_reason = "Failed to parse questions during regeneration."
+                final_questions_block = current_questions_block # Keep last parsable version
+                break # Exit loop if parsing fails
 
-        # STEP 5: Update Job Storage with Final Results
+            current_evaluation_results = []
+            needs_regeneration = False
+            failed_question_details = []
+
+            # --- Evaluate current questions ---
+            for i, question in enumerate(parsed_current_questions):
+                q_eval = {"question_num": i + 1, "question_text": question}
+                q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
+                q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
+                current_evaluation_results.append(q_eval)
+
+                # Check failure criteria
+                qsts_failed = q_eval["qsts_score"] < QSTS_THRESHOLD
+                qualitative_failed = any(not q_eval["qualitative"].get(metric, True) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
+
+                if qsts_failed or qualitative_failed:
+                    needs_regeneration = True
+                    fail_reasons = []
+                    if qsts_failed: fail_reasons.append(f"QSTS below threshold ({q_eval['qsts_score']:.2f} < {QSTS_THRESHOLD})")
+                    if qualitative_failed:
+                        failed_metrics = [m for m, passed in q_eval["qualitative"].items() if m in CRITICAL_QUALITATIVE_FAILURES and not passed]
+                        if failed_metrics: fail_reasons.append(f"Failed critical checks: {', '.join(failed_metrics)}")
+                    if fail_reasons: # Only add if there's a concrete reason
+                        failed_question_details.append(f"  - Question {i+1}: {'; '.join(fail_reasons)}")
+
+            # --- Decide on Regeneration ---
+            if needs_regeneration or (regeneration_attempts == 0 and user_feedback.strip()): # Regenerate if checks failed OR first pass with user feedback
+                logger.info(f"[{job_id}] Regeneration triggered (Attempt {regeneration_attempts + 1}). AutoFail={needs_regeneration}, UserFeedback={bool(user_feedback.strip())}")
+                job_data["message"] = f"Regenerating questions (Attempt {regeneration_attempts + 1})..."
+                regeneration_performed = True
+
+                # --- Construct Insightful Feedback for LLM ---
+                llm_feedback = "The following issues were identified in the previous attempt:\n"
+                if failed_question_details:
+                     llm_feedback += "Automatic Evaluation Failures:\n" + "\n".join(failed_question_details) + "\n"
+                     llm_feedback += "Focus on improving these specific aspects: "
+                     if any("QSTS" in reason for reason in failed_question_details):
+                         llm_feedback += "Ensure questions are more semantically related to the core context provided. "
+                     if any("Failed critical checks" in reason for reason in failed_question_details):
+                         llm_feedback += "Improve clarity, grammar, answerability within the context, and topic relevance as indicated. "
+                     llm_feedback += "\n"
+
+                else:
+                     llm_feedback += "Automatic evaluation found no critical issues based on thresholds, but improvement or user feedback suggests regeneration.\n"
+
+                if user_feedback.strip():
+                     llm_feedback += "User Provided Feedback:\n" + user_feedback.strip() + "\n"
+                     llm_feedback += "Incorporate this user feedback directly.\n"
+
+                llm_feedback += f"\nPlease regenerate EXACTLY {params['num_questions']} questions, addressing these points while adhering to all original instructions (Use ONLY the provided context, target Bloom's level: {params['taxonomy_level']}, course: '{params['course_name']}', topics: {params['topics_list']}). Strive for high-quality, insightful questions directly answerable from the context."
+
+                regeneration_prompt = f"{original_user_prompt_filled}\n\n--- FEEDBACK ON PREVIOUS ATTEMPT (Attempt {regeneration_attempts + 1}) ---\n{llm_feedback}"
+
+                # --- Call Gemini for Regeneration ---
+                regenerated_questions_block_attempt = get_gemini_response(system_prompt, regeneration_prompt)
+
+                if regenerated_questions_block_attempt.startswith("Error:"):
+                    logger.error(f"[{job_id}] Regeneration attempt {regeneration_attempts + 1} failed: {regenerated_questions_block_attempt}")
+                    loop_exit_reason = f"Regeneration failed during attempt {regeneration_attempts + 1}. Keeping previous version."
+                    final_questions_block = current_questions_block # Keep last good version
+                    final_evaluation_results = current_evaluation_results # Keep last eval results
+                    job_data["regeneration_error"] = f"Regeneration failed ({regenerated_questions_block_attempt})."
+                    break # Exit loop on failure
+                else:
+                    logger.info(f"[{job_id}] Successfully regenerated questions (Attempt {regeneration_attempts + 1}).")
+                    current_questions_block = regenerated_questions_block_attempt # Use new questions for next loop iteration
+                    regeneration_attempts += 1
+                    # Continue to the next iteration to evaluate the regenerated questions
+            else:
+                # No regeneration needed based on this cycle's evaluation
+                logger.info(f"[{job_id}] No regeneration needed after attempt {regeneration_attempts + 1}.")
+                final_questions_block = current_questions_block
+                final_evaluation_results = current_evaluation_results # Use the results from this successful evaluation
+                loop_exit_reason = "Questions met criteria, or user provided no feedback."
+                break # Exit loop successfully
+
+        # --- End of Regeneration Loop ---
+
+        if regeneration_attempts == MAX_REGENERATION_ATTEMPTS:
+            loop_exit_reason = f"Reached maximum regeneration attempts ({MAX_REGENERATION_ATTEMPTS}). Using last generated set."
+            final_questions_block = current_questions_block
+            # Need to evaluate this final set one last time if loop maxed out
+            logger.info(f"[{job_id}] Reached max regeneration attempts. Evaluating final set.")
+            final_parsed_questions = parse_questions(final_questions_block)
+            if not final_parsed_questions:
+                 logger.error(f"[{job_id}] Failed to parse final questions after max attempts. Block: {final_questions_block[:200]}...")
+                 raise ValueError("Failed to parse final questions after max attempts.")
+            final_evaluation_results = []
+            for i, question in enumerate(final_parsed_questions):
+                 q_eval = {"question_num": i + 1, "question_text": question}
+                 q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
+                 q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
+                 final_evaluation_results.append(q_eval)
+
+
+        # --- Construct Final Feedback Summary ---
+        job_data["message"] = "Constructing final report..."
+        final_parsed_questions = parse_questions(final_questions_block) # Parse the definite final block
+        num_final_questions = len(final_parsed_questions)
+        final_feedback_summary = f"Processing finished. {num_final_questions} questions generated.\n"
+        final_feedback_summary += f"Loop Exit Reason: {loop_exit_reason}\n"
+
+        if regeneration_performed:
+             final_feedback_summary += f"Regeneration was performed {regeneration_attempts} time(s).\n"
+        if job_data.get("regeneration_error"):
+             final_feedback_summary += f"Note: {job_data['regeneration_error']}\n"
+
+        # Summarize final evaluation status
+        passed_count = 0
+        if final_evaluation_results: # Check if evaluation results exist
+             for res in final_evaluation_results:
+                qsts_ok = res.get('qsts_score', 0) >= QSTS_THRESHOLD
+                qual_ok = not any(not res.get('qualitative', {}).get(metric, True) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
+                if qsts_ok and qual_ok:
+                    passed_count += 1
+             final_feedback_summary += f"Final Evaluation: {passed_count}/{num_final_questions} questions passed all checks (QSTS >= {QSTS_THRESHOLD} and critical qualitative metrics met).\n"
+        else:
+             final_feedback_summary += "Final evaluation could not be completed.\n"
+
+
+        # --- Update Job Storage with Final Results ---
         job_data["status"] = "completed"
         job_data["message"] = "Processing complete."
         if "result" not in job_data: job_data["result"] = {}
         job_data["result"]["generated_questions"] = final_questions_block # Final questions
         job_data["result"]["evaluation_feedback"] = final_feedback_summary.strip() # Final feedback text
         job_data["result"]["per_question_evaluation"] = final_evaluation_results # Eval of final questions
-        job_data["result"]["image_paths"] = job_storage[job_id].get("image_paths", []) # Ensure paths are present
+        job_data["result"]["image_paths"] = image_paths # Ensure paths are present
 
-        logger.info(f"[{job_id}] Evaluation/Regeneration task completed successfully.")
+        logger.info(f"[{job_id}] Evaluation/Regeneration task completed successfully. {loop_exit_reason}")
 
     except Exception as e:
          logger.exception(f"[{job_id}] Evaluation/Regeneration task failed: {e}")
@@ -993,6 +1099,8 @@ async def start_processing_endpoint(
         if not files: raise HTTPException(status_code=400, detail="No files uploaded.")
         try: num_q_int = int(num_questions); assert 1 <= num_q_int <= 100
         except: raise HTTPException(status_code=400, detail="Num questions must be int between 1-100.")
+        # Store the integer version for later use
+        job_storage[job_id]["params"]["num_questions"] = num_q_int
 
         upload_dir = TEMP_UPLOAD_DIR
         valid_files_saved = 0
@@ -1000,6 +1108,7 @@ async def start_processing_endpoint(
             if file.filename and file.filename.lower().endswith(".pdf"):
                 # Basic filename sanitization for temp storage
                 safe_filename = "".join(c for c in file.filename if c.isalnum() or c in ('-', '_', '.'))
+                if not safe_filename: safe_filename = f"file_{valid_files_saved+1}.pdf" # Fallback filename
                 temp_file_path = upload_dir / f"{job_id}_{uuid.uuid4().hex[:8]}_{safe_filename}"
                 try:
                     with temp_file_path.open("wb") as buffer: shutil.copyfileobj(file.file, buffer)
@@ -1042,8 +1151,8 @@ async def regenerate_questions_endpoint(
     current_status = job_data.get("status")
     if current_status != "awaiting_feedback": raise HTTPException(status_code=400, detail=f"Job not awaiting feedback (status: {current_status})")
 
-    job_data["status"] = "processing_feedback" # Set status for polling
-    job_data["message"] = "Evaluating questions and processing feedback..."
+    job_data["status"] = "queued_feedback" # Set status for polling
+    job_data["message"] = "Queued for evaluation and potential regeneration..."
     logger.info(f"[{job_id}] Queuing evaluation/regeneration task.")
     # Pass feedback (can be empty string if user didn't provide any)
     background_tasks.add_task(run_regeneration_task, job_id=job_id, user_feedback=request.feedback or "")
@@ -1061,14 +1170,26 @@ async def get_job_status(job_id: str):
     job_result_model = None
     if isinstance(result_data, dict):
         try: job_result_model = JobResultData(**result_data)
-        except Exception as e: logger.error(f"[{job_id}] Error parsing result data for status: {e}. Data: {result_data}")
-    # Ensure result is None if parsing failed
-    return Job(job_id=job_id, status=job.get("status", "unknown"), message=job.get("message"), result=job_result_model if job_result_model else None)
+        except Exception as e:
+            logger.error(f"[{job_id}] Error parsing result data for status: {e}. Data: {result_data}")
+            # If parsing fails, set result to None but still return status/message
+            job["result"] = None # Clear potentially corrupt result
+            job["message"] = job.get("message", "") + " [Result parsing error]"
+            job["status"] = "error" # Mark job as error if result is invalid
+
+    # Re-check result_data after potential clearing
+    result_data = job.get("result")
+    if isinstance(result_data, dict):
+         job_result_model = JobResultData(**result_data) # Try parsing again if it wasn't cleared
+
+    # Return the current job state
+    return Job(job_id=job_id, status=job.get("status", "unknown"), message=job.get("message"), result=job_result_model)
 
 
 @app.get("/health")
 async def health_check():
     """ Basic health check endpoint. """
+    # Add checks for dependencies if needed (e.g., Qdrant ping)
     return {"status": "ok"}
 
 # --- Run with Uvicorn ---
