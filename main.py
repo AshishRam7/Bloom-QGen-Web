@@ -77,16 +77,16 @@ DATALAB_POLL_TIMEOUT = 30
 MAX_POLLS = 300
 POLL_INTERVAL = 3
 GEMINI_TIMEOUT = 180
-MAX_GEMINI_RETRIES = 3 # Number of retries for Gemini API calls
-GEMINI_RETRY_DELAY = 60 # Seconds to wait between Gemini retries
+MAX_GEMINI_RETRIES = 3 
+GEMINI_RETRY_DELAY = 60 
 
 # Qdrant Configuration
-QDRANT_COLLECTION_NAME = "markdown_docs_v3_semantic" # New collection name
+QDRANT_COLLECTION_NAME = "markdown_docs_v3_semantic"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 VECTOR_SIZE = 384
 
 # Gemini Configuration
-GEMINI_MODEL_NAME = "gemini-1.5-flash-latest" # Model for generation and evaluation
+GEMINI_MODEL_NAME = "gemini-2.0-flash-lite" # Model for generation and evaluation
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model_name}:{action}?key={api_key}"
 
 # Evaluation Configuration
@@ -209,9 +209,6 @@ class Job(BaseModel):
 
 class RegenerationRequest(BaseModel):
     feedback: str = Field(..., description="User feedback for question regeneration (can be empty)")
-
-
-# --- Helper Functions ---
 
 def generate_description_for_image(image_path, figure_caption=""):
     """Load an image, encode it, and query Moondream for a description."""
