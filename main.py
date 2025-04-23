@@ -76,9 +76,9 @@ DATALAB_POST_TIMEOUT = 60
 DATALAB_POLL_TIMEOUT = 30
 MAX_POLLS = 300
 POLL_INTERVAL = 3
-GEMINI_TIMEOUT = 180
-MAX_GEMINI_RETRIES = 3 
-GEMINI_RETRY_DELAY = 60 
+GEMINI_TIMEOUT = 240 # Increased timeout further for complex generations
+MAX_GEMINI_RETRIES = 3
+GEMINI_RETRY_DELAY = 60
 
 # Qdrant Configuration
 QDRANT_COLLECTION_NAME = "markdown_docs_v3_semantic"
@@ -86,7 +86,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 VECTOR_SIZE = 384
 
 # Gemini Configuration
-GEMINI_MODEL_NAME = "gemini-2.0-flash-lite" # Model for generation and evaluation
+GEMINI_MODEL_NAME = "gemini-2.0-flash-lite" # Using latest flash model
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model_name}:{action}?key={api_key}"
 
 # Evaluation Configuration
@@ -117,7 +117,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%
 logger = logging.getLogger(__name__)
 
 # --- Initialize Models and Clients (Global Scope) ---
-# (Keep the try-except block and initialization logic from previous version)
 try:
     logger.info("Initializing Moondream model...")
     model_md = md.vl(api_key=MOONDREAM_API_KEY)
@@ -169,9 +168,7 @@ app = FastAPI(title="Semantic PDF Question Generator")
 # Mount static files (CSS, JS)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Mount extracted images - *** THIS IS THE FIX FOR 404 ERRORS ***
-# The path "/extracted_images" matches the base of the URLs generated later.
-# The directory EXTRACTED_IMAGES_DIR is where the files actually are.
+# Mount extracted images
 app.mount("/extracted_images", StaticFiles(directory=EXTRACTED_IMAGES_DIR), name="extracted_images")
 
 templates = Jinja2Templates(directory="templates")
@@ -350,7 +347,6 @@ def process_markdown(markdown_text, saved_images: Dict[str, str], job_id: str):
 
             description = ""
             if image_path:
-                # logger.debug(f"[{job_id}] Generating description for image path: {image_path}")
                 description = generate_description_for_image(image_path, caption)
             else:
                 description = f"*Referenced image '{image_filename_decoded}' (or '{image_filename_encoded}') was not found in extracted images.*"
@@ -361,7 +357,6 @@ def process_markdown(markdown_text, saved_images: Dict[str, str], job_id: str):
             processed_lines.append(block_text)
 
             if caption_line_index != -1: i = caption_line_index # Skip caption line
-            # Image line (i) is skipped by the main loop increment
         else:
             processed_lines.append(line) # Keep non-image lines
 
@@ -469,7 +464,6 @@ def upsert_to_qdrant(job_id: str, collection_name, embeddings, chunks_data, batc
             qdrant_client.upsert(collection_name=collection_name, points=batch_points, wait=True)
             batch_count = len(batch_points)
             total_points_upserted += batch_count
-            # logger.info(f"[{job_id}] Upserted Qdrant batch {i // batch_size + 1} ({batch_count} points). Total: {total_points_upserted}")
         except Exception as e:
             logger.error(f"[{job_id}] Error upserting Qdrant batch {i // batch_size + 1}: {e}", exc_info=True)
             raise Exception(f"Failed to upsert batch to Qdrant: {e}")
@@ -483,10 +477,9 @@ def fill_placeholders(template_path: Path, output_path: Path, placeholders: Dict
         if not template_path.exists(): raise FileNotFoundError(f"Template file not found: {template_path}")
         template = template_path.read_text(encoding='utf-8')
         for placeholder, value in placeholders.items():
-            template = template.replace(f"{{{placeholder}}}", str(value))
+            template = template.replace(f"{{{placeholder}}}", str(value)) # Ensure value is string
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(template, encoding='utf-8')
-        # logger.info(f"Filled placeholders and saved updated prompt to {output_path}") # Reduce noise
     except Exception as e:
         logger.error(f"Error filling placeholders for {template_path}: {e}", exc_info=True)
         raise
@@ -502,23 +495,23 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
         "systemInstruction": {"parts": [{"text": system_prompt}]},
          "generationConfig": {
              "temperature": 0.5 if is_json_output else 0.7,
-             "maxOutputTokens": 4096, # Adjust as needed
-             "topP": 0.95, # Example value
-             "topK": 40,    # Example value
+             "maxOutputTokens": 8192,
+             "topP": 0.95,
+             "topK": 40,
          }
     }
-    # Only include responseMimeType if expecting JSON
     if is_json_output:
          payload["generationConfig"]["responseMimeType"] = "application/json"
 
     last_error = None
     for attempt in range(MAX_GEMINI_RETRIES):
         try:
+            # logger.debug(f"Gemini Request Payload (partial user): {str(payload)[:500]}...") # Uncomment for deep debug
             response = requests.post(api_url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT)
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             response_data = response.json()
 
-            # --- Robust response extraction ---
+            # --- Robust response extraction (unchanged from previous version) ---
             if response_data.get('candidates'):
                 candidate = response_data['candidates'][0]
                 if candidate.get('content', {}).get('parts'):
@@ -529,12 +522,10 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
                     if gemini_response_text:
                         return gemini_response_text.strip()
                     else:
-                        # Handle case where response is empty but not blocked
                         logger.warning(f"Gemini returned an empty response. Finish reason: {finish_reason}. Candidate: {candidate}")
                         return f"Error: Gemini returned an empty response (finish reason: {finish_reason})."
 
                 elif candidate.get('finishReason'):
-                    # Check if stopped due to safety or other issues
                     reason = candidate['finishReason']
                     safety_ratings = candidate.get('safetyRatings', [])
                     blocked_by_safety = any(sr.get('probability') not in ['NEGLIGIBLE', 'LOW'] for sr in safety_ratings)
@@ -544,17 +535,14 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
                          logger.error(error_msg)
                          return error_msg
                     else:
-                         # It stopped for another reason (e.g., RECITATION, OTHER)
                          error_msg = f"Error: Generation stopped by Gemini - {reason}"
                          logger.error(error_msg)
                          return error_msg
                 else:
-                    # Unexpected structure within candidate
                     logger.error(f"Could not extract text from Gemini response structure. Candidate: {candidate}")
                     return "Error: Could not extract text from Gemini response structure."
 
             elif response_data.get('promptFeedback', {}).get('blockReason'):
-                # The entire prompt was blocked
                 block_reason = response_data['promptFeedback']['blockReason']
                 safety_ratings = response_data['promptFeedback'].get('safetyRatings', [])
                 block_details = ", ".join([f"{sr['category']}: {sr['probability']}" for sr in safety_ratings if sr.get('probability') not in ['NEGLIGIBLE', 'LOW']])
@@ -565,51 +553,35 @@ def get_gemini_response(system_prompt: str, user_prompt: str, is_json_output: bo
                 logger.error(error_msg)
                 return error_msg
             else:
-                # Unexpected top-level response format
                 logger.error(f"Unexpected Gemini API response format: {response_data}")
                 return f"Error: Unexpected Gemini API response format."
 
         except requests.exceptions.Timeout:
             last_error = "Error: Gemini API request timed out."
             logger.warning(f"{last_error} Attempt {attempt + 1}/{MAX_GEMINI_RETRIES}.")
-            if attempt + 1 < MAX_GEMINI_RETRIES:
-                time.sleep(GEMINI_RETRY_DELAY)
-            continue # Retry
+            if attempt + 1 < MAX_GEMINI_RETRIES: time.sleep(GEMINI_RETRY_DELAY)
+            continue
 
         except requests.exceptions.RequestException as e:
             last_error = f"Error: Gemini API request failed - {e}"
-            response_text = ""
-            status_code = None
+            response_text = ""; status_code = None
             if e.response is not None:
-                response_text = e.response.text[:500] # Log beginning of response
-                status_code = e.response.status_code
-
-            # Check for rate limiting (e.g., 429 Too Many Requests)
-            # Gemini might also return specific error codes in the JSON body for rate limits,
-            # but catching 429 is a common pattern.
+                response_text = e.response.text[:500]; status_code = e.response.status_code
             if status_code == 429:
                 logger.warning(f"Gemini rate limit hit (HTTP 429). Attempt {attempt + 1}/{MAX_GEMINI_RETRIES}. Waiting {GEMINI_RETRY_DELAY}s...")
-                if attempt + 1 < MAX_GEMINI_RETRIES:
-                    time.sleep(GEMINI_RETRY_DELAY)
-                    continue # Retry
-                else:
-                    last_error = "Error: Gemini rate limit exceeded after retries."
-                    break # Exhausted retries
+                if attempt + 1 < MAX_GEMINI_RETRIES: time.sleep(GEMINI_RETRY_DELAY); continue
+                else: last_error = "Error: Gemini rate limit exceeded after retries."; break
             else:
-                # Log other request errors
                 logger.error(f"Error calling Gemini API: {e} - Status Code: {status_code} - Response: {response_text}", exc_info=True)
-                # Don't retry for non-rate-limit errors immediately, return the error
                 return last_error
 
-        except Exception as e: # Catch other potential errors (like JSON parsing)
+        except Exception as e:
             last_error = f"Error: Failed to process Gemini response - {e}"
             logger.error(last_error, exc_info=True)
-            # Depending on the error, might not be retryable. Return the error.
             return last_error
 
-    # If loop finishes without returning, it means all retries failed
     logger.error(f"Gemini API call failed after {MAX_GEMINI_RETRIES} attempts. Last error: {last_error}")
-    return last_error # Return the last error encountered
+    return last_error
 
 def find_topics_and_generate_hypothetical_text(job_id: str, academic_level, major, course_name, taxonomy_level, topics):
     """Generates hypothetical text based on topics using Gemini."""
@@ -650,74 +622,184 @@ def search_results_from_qdrant(job_id: str, collection_name, embedded_vector, li
         logger.error(f"[{job_id}] Error searching Qdrant: {e}", exc_info=True)
         return []
 
+# Inside main.py
+
 def generate_initial_questions(job_id: str, retrieved_context: str, params: Dict):
     """Generates the initial set of questions using Gemini."""
     logger.info(f"[{job_id}] Preparing to generate initial questions...")
     blooms = "Bloom's Levels: Remember, Understand, Apply, Analyze, Evaluate, Create." # Simpler
-    max_context_chars = 30000 # Increased slightly, adjust based on Gemini limits
+    max_context_chars = 30000
     truncated_context = retrieved_context[:max_context_chars]
     if len(retrieved_context) > max_context_chars: logger.warning(f"[{job_id}] Truncating context to {max_context_chars} chars for LLM.")
-    placeholders = {"content": truncated_context, "num_questions": params['num_questions'], "course_name": params['course_name'], "taxonomy": params['taxonomy_level'], "major": params['major'], "academic_level": params['academic_level'], "topics_list": params['topics_list'], "blooms_taxonomy_descriptions": blooms }
+
+    generate_diagrams_flag = params.get('generate_diagrams', False)
+    logger.info(f"[{job_id}] generate_diagrams flag in generate_initial_questions: {generate_diagrams_flag}")
+
+    # --- STRONGER PlantUML Instructions ---
+    diagram_instructions = ""
+    if generate_diagrams_flag:
+        logger.info(f"[{job_id}] PlantUML diagram generation instructions requested for prompt.")
+        diagram_instructions = (
+            "\n7. **PlantUML Diagram Generation (REQUIRED if applicable):** "
+            "For questions involving graph structures, tree traversals, algorithm steps (like flowcharts or state changes), or finite state machines described in the context, "
+            "you **MUST** generate a relevant PlantUML diagram to visually aid the question. "
+            "The diagram must be directly derivable from the provided context. "
+            "Enclose the PlantUML code **strictly** within ```plantuml ... ``` tags immediately after the question text it relates to. "
+            "Example format:\n"
+            "   ```plantuml\n"
+            "   @startuml\n"
+            "   (*) --> State1\n"
+            "   State1 --> State2 : Event\n"
+            "   State2 --> (*)\n"
+            "   @enduml\n"
+            "   ```\n"
+            "Generate diagrams **only** when the context provides sufficient detail to create a meaningful and accurate visual representation relevant to the question. Do not invent details not present in the context."
+        )
+    # --- END ---
+
+    placeholders = {
+        "content": truncated_context,
+        "num_questions": params['num_questions'],
+        "course_name": params['course_name'],
+        "taxonomy": params['taxonomy_level'],
+        "major": params['major'],
+        "academic_level": params['academic_level'],
+        "topics_list": params['topics_list'],
+        "blooms_taxonomy_descriptions": blooms,
+        "diagram_instructions": diagram_instructions # Pass the instructions (or empty string)
+    }
+
     try:
         temp_path = TEMP_UPLOAD_DIR / f"{job_id}_initial_user_prompt.txt"
         fill_placeholders(FINAL_USER_PROMPT_PATH, temp_path, placeholders)
         user_prompt = temp_path.read_text(encoding="utf8")
-        system_prompt = f"You are an AI assistant creating educational questions for a {params['academic_level']} {params['major']} course: '{params['course_name']}'. Generate exactly {params['num_questions']} questions based ONLY on the provided context, aligned with Bloom's level: {params['taxonomy_level']}, focusing on topics: {params['topics_list']}. Ensure questions are clear, unambiguous, context-answerable. Output as a numbered list."
-        job_storage[job_id]["generation_prompts"] = {"user_prompt_content": user_prompt, "system_prompt": system_prompt}
+
+        # Construct system prompt with clearer output expectation
+        system_prompt_base = (
+            f"You are an AI assistant specialized in creating high-quality educational questions for a {params['academic_level']} {params['major']} course: '{params['course_name']}'. "
+            f"Generate exactly {params['num_questions']} questions based ONLY on the provided context, strictly aligned with Bloom's level: {params['taxonomy_level']}, focusing on topics: {params['topics_list']}. "
+            "Ensure questions are clear, unambiguous, directly answerable *only* from the given context, and suitable for the specified academic standard."
+        )
+        plantuml_system_hint = ""
+        if generate_diagrams_flag:
+            # Make the hint very direct about the output format
+            plantuml_system_hint = " **If the instructions require a PlantUML diagram for a question, you MUST include it formatted within ```plantuml ... ``` tags.**"
+
+        # Clarify the final output instruction
+        output_format_instruction = (
+            " **Your final output MUST consist ONLY of the numbered list of questions. Each question may optionally be followed by its relevant PlantUML code block if diagrams were requested and deemed necessary based on context. Do not add any other text, introductions, or summaries.**"
+        )
+
+        system_prompt_final = system_prompt_base + plantuml_system_hint + output_format_instruction
+
+        # Store the final, filled prompts used for generation
+        job_storage[job_id]["generation_prompts"] = {"user_prompt_content": user_prompt, "system_prompt": system_prompt_final}
+        logger.info(f"[{job_id}] Stored prompts. System prompt includes PlantUML hint: {bool(plantuml_system_hint)}")
+
         logger.info(f"[{job_id}] Generating initial questions via Gemini...")
-        initial_questions = get_gemini_response(system_prompt, user_prompt)
+        initial_questions = get_gemini_response(system_prompt_final, user_prompt)
         temp_path.unlink(missing_ok=True)
-        if initial_questions.startswith("Error:"): raise Exception(f"{initial_questions}")
-        logger.info(f"[{job_id}] Successfully generated initial questions.")
+
+        # --- Keep the print statement for debugging the next run ---
+        print("-" * 80)
+        print(f"[{job_id}] RAW GEMINI RESPONSE for initial questions:")
+        print(initial_questions)
+        print("-" * 80)
+        # ---
+
+        if initial_questions.startswith("Error:"):
+            raise Exception(f"Gemini Error: {initial_questions}")
+
+        logger.info(f"[{job_id}] Successfully generated initial questions snippet: {initial_questions[:300]}...")
+        if generate_diagrams_flag and "```plantuml" not in initial_questions:
+             logger.warning(f"[{job_id}] PlantUML was requested, but '```plantuml' not found in the initial response. The context might not have supported diagram generation according to the LLM.")
+        elif not generate_diagrams_flag and "```plantuml" in initial_questions:
+             logger.warning(f"[{job_id}] PlantUML was *not* requested, but '```plantuml' *was* found in the initial response.")
+
         return initial_questions
     except FileNotFoundError as e: raise Exception(f"Final user prompt template missing: {e}")
-    except Exception as e: raise Exception(f"Initial question generation failed unexpectedly: {e}")
+    except Exception as e:
+        logger.error(f"[{job_id}] Initial question generation failed: {e}", exc_info=True)
+        raise Exception(f"Initial question generation failed unexpectedly: {e}")
 
 def parse_questions(question_block: str) -> List[str]:
-    """Splits text into questions (numbered list format preferred)."""
+    """Splits text into questions, handling potential PlantUML blocks."""
+    # (This function remains the same as the previous version, looks reasonable)
     if not question_block: return []
-    # Updated regex: handles optional whitespace, various delimiters, whitespace after delimiter
-    questions = re.findall(r"^\s*\d+\s*[\.\)\-:]?\s+(.*)", question_block, re.MULTILINE)
-    if not questions:
-        # Fallback if no numbered list detected
-        logger.warning("Could not parse numbered list, falling back to splitting by newline.")
-        questions = [q.strip() for q in question_block.splitlines() if q.strip() and not q.strip().startswith("---")] # Avoid separators
-    return [q.strip() for q in questions if q.strip()]
+    lines = question_block.splitlines()
+    questions = []
+    current_question_lines = []
+    in_plantuml_block = False
+    question_start_pattern = re.compile(r"^\s*\d+\s*[\.\)\-:]?\s+")
+
+    for line in lines:
+        stripped_line = line.strip()
+        if stripped_line.startswith("```plantuml"):
+            in_plantuml_block = True
+            if current_question_lines: current_question_lines.append(line)
+            continue
+        if stripped_line == "```" and in_plantuml_block:
+            in_plantuml_block = False
+            if current_question_lines: current_question_lines.append(line)
+            continue
+        if in_plantuml_block:
+             if current_question_lines: current_question_lines.append(line)
+             continue
+        if question_start_pattern.match(line):
+            if current_question_lines: questions.append("\n".join(current_question_lines).strip())
+            current_question_lines = [line]
+        elif current_question_lines:
+            current_question_lines.append(line)
+
+    if current_question_lines: questions.append("\n".join(current_question_lines).strip())
+
+    cleaned_questions = [q.strip() for q in questions if q.strip()] # Keep full blocks
+
+    if not cleaned_questions and question_block:
+        logger.warning(f"Could not parse numbered list with potential PlantUML blocks. Falling back to simple newline split for questions: {question_block[:200]}...")
+        cleaned_questions = [q.strip() for q in question_block.splitlines() if q.strip() and not q.strip().startswith("---")]
+    return cleaned_questions
+
 
 def evaluate_single_question_qsts(job_id: str, question: str, context: str) -> float:
-    """Calculates QSTS score between a single question and the context."""
+    """Calculates QSTS score between a single question (text part only) and the context."""
+     # (This function remains the same as the previous version - extracts text)
     if not question or not context: return 0.0
+    question_text_only = re.sub(r"```plantuml.*?```", "", question, flags=re.DOTALL | re.MULTILINE)
+    question_text_only = re.sub(r"^\s*\d+\s*[\.\)\-:]?\s+", "", question_text_only.strip()).strip()
+    if not question_text_only:
+         logger.warning(f"[{job_id}] No text found in question after removing PlantUML for QSTS eval: '{question[:50]}...'")
+         return 0.0
     try:
-        q_emb = model_st.encode(question)
-        # OPTIMIZATION: Embed context once per batch if performance is an issue
+        q_emb = model_st.encode(question_text_only)
         c_emb = model_st.encode(context)
         score = sbert_util.pytorch_cos_sim(q_emb, c_emb).item()
         return round(max(-1.0, min(1.0, score)), 4)
     except Exception as e:
-        logger.warning(f"[{job_id}] Error calculating QSTS for question '{question[:50]}...': {e}", exc_info=True)
+        logger.warning(f"[{job_id}] Error calculating QSTS for question '{question_text_only[:50]}...': {e}", exc_info=True)
         return 0.0
 
 def evaluate_single_question_qualitative(job_id: str, question: str, context: str) -> Dict[str, bool]:
-    """Uses LLM to evaluate qualitative aspects of a single question."""
+    """Uses LLM to evaluate qualitative aspects of a single question (including PlantUML if present)."""
+    # (This function remains the same as the previous version - uses full block)
     results = {metric: False for metric in QUALITATIVE_METRICS}
     if not question or not context: return results
+    full_question_block = question
     try:
-        eval_context = context[:4000] + ("\n... [Context Truncated]" if len(context)>4000 else "") # Increased context slightly
-        placeholders = {"question": question, "context": eval_context, "criteria_list_str": ", ".join(QUALITATIVE_METRICS)}
-        temp_path = TEMP_UPLOAD_DIR / f"{job_id}_qualitative_eval_prompt_{uuid.uuid4().hex[:6]}.txt" # Unique temp name
+        eval_context = context[:4000] + ("\n... [Context Truncated]" if len(context)>4000 else "")
+        placeholders = {"question": full_question_block, "context": eval_context, "criteria_list_str": ", ".join(QUALITATIVE_METRICS)}
+        temp_path = TEMP_UPLOAD_DIR / f"{job_id}_qualitative_eval_prompt_{uuid.uuid4().hex[:6]}.txt"
         fill_placeholders(QUALITATIVE_EVAL_PROMPT_PATH, temp_path, placeholders)
         eval_prompt = temp_path.read_text(encoding='utf-8')
         temp_path.unlink(missing_ok=True)
 
-        eval_system_prompt = "You are an AI assistant evaluating educational question quality based on context and criteria. Respond ONLY with a single, valid JSON object with boolean values (true/false) for each criterion."
+        eval_system_prompt = "You are an AI assistant evaluating educational question quality based on context and criteria. The question might include PlantUML code for a diagram; evaluate the *entire* question block (text and diagram code if present). Respond ONLY with a single, valid JSON object with boolean values (true/false) for each criterion."
         response_text = get_gemini_response(eval_system_prompt, eval_prompt, is_json_output=True)
 
         if response_text.startswith("Error:"):
             logger.error(f"[{job_id}] LLM qualitative evaluation failed: {response_text}")
             return results
-
         try:
-            # Try to clean common markdown code blocks before parsing JSON
             cleaned_response = re.sub(r"^```json\s*|\s*```$", "", response_text.strip(), flags=re.MULTILINE)
             eval_results = json.loads(cleaned_response)
             if not isinstance(eval_results, dict): raise ValueError("LLM response is not a JSON object.")
@@ -727,40 +809,32 @@ def evaluate_single_question_qualitative(job_id: str, question: str, context: st
                 else: logger.warning(f"[{job_id}] Invalid/missing value for metric '{metric}' in LLM eval: {value}. Defaulting False.")
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"[{job_id}] Failed to parse/validate JSON from LLM eval: {e}. Response: {response_text}")
-            # Return default 'False' results if parsing fails
-
         return results
     except FileNotFoundError as e:
         logger.error(f"[{job_id}] Qualitative eval prompt template missing: {e}")
-        return results # Return defaults
+        return results
     except Exception as e:
-        logger.error(f"[{job_id}] Error during qualitative evaluation for '{question[:50]}...': {e}", exc_info=True)
-        return results # Return defaults
+        logger.error(f"[{job_id}] Error during qualitative evaluation for question block starting with: '{full_question_block[:100]}...': {e}", exc_info=True)
+        return results
 
 def cleanup_job_files(job_id: str):
     """Cleans up temporary files and directories associated with a job."""
+    # (This function remains the same as the previous version)
     logger.info(f"[{job_id}] Cleaning up temporary files and directories...")
     job_data = job_storage.get(job_id, {})
     original_file_paths = job_data.get("temp_file_paths", [])
-
-    # Delete original uploaded files
     for file_path_str in original_file_paths:
         try: Path(file_path_str).unlink(missing_ok=True)
         except Exception as e: logger.warning(f"[{job_id}] Error deleting temp file {file_path_str}: {e}")
-
-    # Delete job-specific image directory
     job_image_dir = EXTRACTED_IMAGES_DIR / job_id
     if job_image_dir.exists():
         try:
             shutil.rmtree(job_image_dir)
             logger.info(f"[{job_id}] Removed temp image directory: {job_image_dir}")
         except Exception as e: logger.warning(f"[{job_id}] Error deleting temp image dir {job_image_dir}: {e}")
-
-    # Delete temporary prompt files
     for prompt_file in TEMP_UPLOAD_DIR.glob(f"{job_id}_*.txt"):
          try: prompt_file.unlink(missing_ok=True)
          except Exception as e: logger.warning(f"[{job_id}] Error deleting temp prompt file {prompt_file}: {e}")
-
     logger.info(f"[{job_id}] Temporary file cleanup finished.")
 
 
@@ -768,6 +842,7 @@ def cleanup_job_files(job_id: str):
 
 def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
     """Main background task: Process docs, generate initial Qs, await feedback."""
+    # (Processing steps 1 and 2 remain the same)
     logger.info(f"[{job_id}] Background job started with params: {params}")
     job_storage[job_id]["status"] = "processing"
     job_storage[job_id]["message"] = "Starting document processing..."
@@ -776,42 +851,39 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
     session_id = job_id
     all_final_markdown = ""
     retrieved_context = ""
-    saved_image_paths: List[str] = [] # Store paths for final result
+    saved_image_paths: List[str] = []
 
     try:
         # STEP 1: Process PDFs
-        all_saved_images_map = {} # Collect from all docs
-        job_image_dir = Path(EXTRACTED_IMAGES_DIR) / job_id # Base dir for this job's images
+        all_saved_images_map = {}
+        job_image_dir = Path(EXTRACTED_IMAGES_DIR) / job_id
 
         for i, file_path_str in enumerate(file_paths):
+            # ... (PDF processing, image extraction, markdown generation - unchanged) ...
             file_path = Path(file_path_str)
             if not file_path.exists(): continue
             job_storage[job_id]["message"] = f"Processing file {i+1}/{len(file_paths)}: {file_path.name}..."
-            # Sanitize base name for directory creation
             safe_base_name = "".join([c if c.isalnum() or c in ('-', '_') else '_' for c in file_path.stem])
-            if not safe_base_name: safe_base_name = f"doc_{i+1}" # Fallback if name is empty after sanitization
-            document_id = f"{job_id}_{safe_base_name}" # Use a more descriptive document_id
+            if not safe_base_name: safe_base_name = f"doc_{i+1}"
+            document_id = f"{job_id}_{safe_base_name}"
 
             try:
                 data = call_datalab_marker(file_path)
                 markdown_text = data.get("markdown", "")
                 images_dict = data.get("images", {})
-                # Save images into a subdirectory named after the sanitized PDF name
                 doc_images_folder = job_image_dir / safe_base_name
                 saved_images = save_extracted_images(images_dict, doc_images_folder)
-                all_saved_images_map.update(saved_images) # Add to overall map
+                all_saved_images_map.update(saved_images)
 
-                # *** Generate URLs relative to the *mount point* ***
                 for original_name, saved_path_str in saved_images.items():
                     saved_path = Path(saved_path_str)
-                    # URL path: /extracted_images/{job_id}/{safe_base_name}/{safe_img_name}
                     relative_path_url = f"{job_id}/{safe_base_name}/{saved_path.name}"
                     url = f"/extracted_images/{relative_path_url.replace(os.sep, '/')}"
                     saved_image_paths.append(url)
 
                 final_markdown = process_markdown(markdown_text, saved_images, job_id)
                 all_final_markdown += f"\n\n## --- Document: {file_path.name} ---\n\n" + final_markdown
-                output_markdown_path = FINAL_RESULTS_DIR / f"{document_id}_final.md" # Use document_id
+                output_markdown_path = FINAL_RESULTS_DIR / f"{document_id}_final.md"
                 output_markdown_path.parent.mkdir(parents=True, exist_ok=True)
                 output_markdown_path.write_text(final_markdown, encoding="utf-8")
                 logger.info(f"[{job_id}] Saved final markdown for {file_path.name} to {output_markdown_path}")
@@ -829,15 +901,14 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
             except Exception as e:
                 error_message = f"Error during processing of {file_path.name}: {e}"
                 logger.error(error_message, exc_info=True)
-                raise Exception(error_message) # Re-raise to stop job
+                raise Exception(error_message)
 
         if not processed_document_ids: raise ValueError("No documents successfully processed.")
-
-        # Store the generated image URLs (already collected in saved_image_paths)
         job_storage[job_id]["image_paths"] = saved_image_paths
 
         # STEP 2: Generate Hypothetical Text & Search Qdrant
         job_storage[job_id]["message"] = "Generating hypothetical text..."
+        # ... (hypothetical text generation and Qdrant search - unchanged) ...
         hypothetical_text = find_topics_and_generate_hypothetical_text(
             job_id, params['academic_level'], params['major'], params['course_name'], params['taxonomy_level'], params['topics_list']
         )
@@ -849,13 +920,13 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
             session_id_filter=session_id, document_ids_filter=processed_document_ids
         )
         if not search_results: raise ValueError("No relevant context found in vector database.")
-        retrieved_context = "\n\n".join([r.payload.get('text', 'N/A') for r in search_results]) # Simpler combination for eval
-        retrieved_context_preview = "\n\n".join([f"---\n**Context Snippet {i+1}** (Source: {r.payload.get('source', 'N/A')}, Score: {r.score:.3f})\n{r.payload.get('text', 'N/A')[:300]}...\n---" for i, r in enumerate(search_results[:3])]) # Preview top 3
-
-        job_storage[job_id]["retrieved_context"] = retrieved_context # Store full context for eval/regen
+        retrieved_context = "\n\n".join([r.payload.get('text', 'N/A') for r in search_results])
+        retrieved_context_preview = "\n\n".join([f"---\n**Context Snippet {i+1}** (Source: {r.payload.get('source', 'N/A')}, Score: {r.score:.3f})\n{r.payload.get('text', 'N/A')[:300]}...\n---" for i, r in enumerate(search_results[:3])])
+        job_storage[job_id]["retrieved_context"] = retrieved_context
 
         # STEP 3: Generate Initial Questions
         job_storage[job_id]["message"] = "Generating initial questions..."
+        # Calls the updated function which handles the diagram param and stores correct prompts
         initial_questions = generate_initial_questions(job_id, retrieved_context, params)
 
         # STEP 4: Update Status and Result (Awaiting Feedback)
@@ -864,8 +935,8 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
         job_storage[job_id]["result"] = {
             "extracted_markdown": all_final_markdown.strip(),
             "initial_questions": initial_questions,
-            "retrieved_context_preview": retrieved_context_preview, # Show preview
-            "image_paths": saved_image_paths, # Add image URLs
+            "retrieved_context_preview": retrieved_context_preview,
+            "image_paths": saved_image_paths,
             "generated_questions": None, "evaluation_feedback": None, "per_question_evaluation": None,
         }
         logger.info(f"[{job_id}] Job awaiting user feedback.")
@@ -875,7 +946,6 @@ def run_processing_job(job_id: str, file_paths: List[str], params: Dict):
         job_storage[job_id]["status"] = "error"
         job_storage[job_id]["message"] = f"An error occurred: {e}"
         if "result" in job_storage[job_id]: job_storage[job_id]["result"] = None
-        # Let final cleanup handle files
 
 
 def run_regeneration_task(job_id: str, user_feedback: str):
@@ -890,21 +960,24 @@ def run_regeneration_task(job_id: str, user_feedback: str):
         job_data["status"] = "processing_feedback"
         job_data["message"] = "Evaluating initial questions..."
 
-        # Retrieve necessary data
         retrieved_context = job_data.get("retrieved_context")
         initial_questions_block = job_data.get("result", {}).get("initial_questions")
         prompts = job_data.get("generation_prompts", {})
+        # Retrieve the *exact* prompts used for the initial generation
         original_user_prompt_filled = prompts.get("user_prompt_content")
-        system_prompt = prompts.get("system_prompt")
+        system_prompt = prompts.get("system_prompt") # This already includes diagram hint if needed
         params = job_data.get("params", {})
-        image_paths = job_data.get("image_paths", []) # Get image paths
+        image_paths = job_data.get("image_paths", [])
+        generate_diagrams_flag = params.get('generate_diagrams', False) # Get the flag again
 
         if not all([retrieved_context, initial_questions_block, original_user_prompt_filled, system_prompt, params]):
              raise ValueError("Missing necessary data stored from initial stage for evaluation/regeneration.")
+        logger.info(f"[{job_id}] Regen task using generate_diagrams flag: {generate_diagrams_flag}")
+        logger.info(f"[{job_id}] Regen task using stored system prompt: {system_prompt}") # Verify system prompt
 
         # --- Regeneration Loop ---
         current_questions_block = initial_questions_block
-        final_questions_block = initial_questions_block # Default
+        final_questions_block = initial_questions_block
         regeneration_attempts = 0
         regeneration_performed = False
         final_evaluation_results = []
@@ -919,35 +992,36 @@ def run_regeneration_task(job_id: str, user_feedback: str):
                 logger.error(f"[{job_id}] Failed to parse current questions block in attempt {regeneration_attempts + 1}. Block: {current_questions_block[:200]}...")
                 loop_exit_reason = "Failed to parse questions during regeneration."
                 final_questions_block = current_questions_block # Keep last parsable version
-                break # Exit loop if parsing fails
+                break
 
             current_evaluation_results = []
             needs_regeneration = False
             failed_question_details = []
 
             # --- Evaluate current questions ---
-            for i, question in enumerate(parsed_current_questions):
-                q_eval = {"question_num": i + 1, "question_text": question}
-                q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
-                q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
+            for i, question_block_item in enumerate(parsed_current_questions):
+                q_eval = {"question_num": i + 1, "question_text": question_block_item}
+                q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question_block_item, retrieved_context)
+                q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question_block_item, retrieved_context)
                 current_evaluation_results.append(q_eval)
 
-                # Check failure criteria
                 qsts_failed = q_eval["qsts_score"] < QSTS_THRESHOLD
                 qualitative_failed = any(not q_eval["qualitative"].get(metric, True) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
 
                 if qsts_failed or qualitative_failed:
                     needs_regeneration = True
+                    question_text_for_msg = re.sub(r"```plantuml.*?```", "", question_block_item, flags=re.DOTALL | re.MULTILINE).strip()
+                    question_text_for_msg = re.sub(r"^\s*\d+\s*[\.\)\-:]?\s+", "", question_text_for_msg).strip()
                     fail_reasons = []
                     if qsts_failed: fail_reasons.append(f"QSTS below threshold ({q_eval['qsts_score']:.2f} < {QSTS_THRESHOLD})")
                     if qualitative_failed:
                         failed_metrics = [m for m, passed in q_eval["qualitative"].items() if m in CRITICAL_QUALITATIVE_FAILURES and not passed]
                         if failed_metrics: fail_reasons.append(f"Failed critical checks: {', '.join(failed_metrics)}")
-                    if fail_reasons: # Only add if there's a concrete reason
-                        failed_question_details.append(f"  - Question {i+1}: {'; '.join(fail_reasons)}")
+                    if fail_reasons:
+                        failed_question_details.append(f"  - Question {i+1} ('{question_text_for_msg[:50]}...'): {'; '.join(fail_reasons)}")
 
             # --- Decide on Regeneration ---
-            if needs_regeneration or (regeneration_attempts == 0 and user_feedback.strip()): # Regenerate if checks failed OR first pass with user feedback
+            if needs_regeneration or (regeneration_attempts == 0 and user_feedback.strip()):
                 logger.info(f"[{job_id}] Regeneration triggered (Attempt {regeneration_attempts + 1}). AutoFail={needs_regeneration}, UserFeedback={bool(user_feedback.strip())}")
                 job_data["message"] = f"Regenerating questions (Attempt {regeneration_attempts + 1})..."
                 regeneration_performed = True
@@ -957,12 +1031,9 @@ def run_regeneration_task(job_id: str, user_feedback: str):
                 if failed_question_details:
                      llm_feedback += "Automatic Evaluation Failures:\n" + "\n".join(failed_question_details) + "\n"
                      llm_feedback += "Focus on improving these specific aspects: "
-                     if any("QSTS" in reason for reason in failed_question_details):
-                         llm_feedback += "Ensure questions are more semantically related to the core context provided. "
-                     if any("Failed critical checks" in reason for reason in failed_question_details):
-                         llm_feedback += "Improve clarity, grammar, answerability within the context, and topic relevance as indicated. "
+                     if any("QSTS" in reason for reason in failed_question_details): llm_feedback += "Ensure question text is more semantically related to the core context provided. "
+                     if any("Failed critical checks" in reason for reason in failed_question_details): llm_feedback += "Improve clarity, grammar, answerability within the context, and topic relevance as indicated. "
                      llm_feedback += "\n"
-
                 else:
                      llm_feedback += "Automatic evaluation found no critical issues based on thresholds, but improvement or user feedback suggests regeneration.\n"
 
@@ -970,85 +1041,97 @@ def run_regeneration_task(job_id: str, user_feedback: str):
                      llm_feedback += "User Provided Feedback:\n" + user_feedback.strip() + "\n"
                      llm_feedback += "Incorporate this user feedback directly.\n"
 
-                llm_feedback += f"\nPlease regenerate EXACTLY {params['num_questions']} questions, addressing these points while adhering to all original instructions (Use ONLY the provided context, target Bloom's level: {params['taxonomy_level']}, course: '{params['course_name']}', topics: {params['topics_list']}). Strive for high-quality, insightful questions directly answerable from the context."
+                # Add the reminder about diagrams if needed
+                diagram_reminder = ""
+                if generate_diagrams_flag:
+                    diagram_reminder = ", including appropriate PlantUML diagrams (in ```plantuml ... ``` blocks) where relevant and supported by context"
 
+                llm_feedback += (
+                     f"\nPlease regenerate EXACTLY {params['num_questions']} questions, addressing these points while adhering to all original instructions "
+                     f"(Use ONLY the provided context, target Bloom's level: {params['taxonomy_level']}, course: '{params['course_name']}', topics: {params['topics_list']}"
+                     f"{diagram_reminder}). Strive for high-quality, insightful questions directly answerable from the context. "
+                     "Output ONLY the numbered list of questions (and associated PlantUML code blocks if generated), with no extra explanations or introductions." # Reiterate output format
+                 )
+
+                # Combine the original filled user prompt with the new feedback
                 regeneration_prompt = f"{original_user_prompt_filled}\n\n--- FEEDBACK ON PREVIOUS ATTEMPT (Attempt {regeneration_attempts + 1}) ---\n{llm_feedback}"
 
                 # --- Call Gemini for Regeneration ---
+                # Use the original system prompt stored earlier, which already reflects diagram requirement
+                # logger.debug(f"[{job_id}] Regen System Prompt (from storage): {system_prompt}") # Verify
+                # logger.debug(f"[{job_id}] Regen User Prompt (partial): {regeneration_prompt[:500]}...")
                 regenerated_questions_block_attempt = get_gemini_response(system_prompt, regeneration_prompt)
 
                 if regenerated_questions_block_attempt.startswith("Error:"):
                     logger.error(f"[{job_id}] Regeneration attempt {regeneration_attempts + 1} failed: {regenerated_questions_block_attempt}")
                     loop_exit_reason = f"Regeneration failed during attempt {regeneration_attempts + 1}. Keeping previous version."
-                    final_questions_block = current_questions_block # Keep last good version
-                    final_evaluation_results = current_evaluation_results # Keep last eval results
+                    final_questions_block = current_questions_block
+                    final_evaluation_results = current_evaluation_results
                     job_data["regeneration_error"] = f"Regeneration failed ({regenerated_questions_block_attempt})."
-                    break # Exit loop on failure
+                    break
                 else:
-                    logger.info(f"[{job_id}] Successfully regenerated questions (Attempt {regeneration_attempts + 1}).")
-                    current_questions_block = regenerated_questions_block_attempt # Use new questions for next loop iteration
+                    logger.info(f"[{job_id}] Successfully regenerated questions (Attempt {regeneration_attempts + 1}). Snippet: {regenerated_questions_block_attempt[:300]}...")
+                    if generate_diagrams_flag and "```plantuml" not in regenerated_questions_block_attempt:
+                        logger.warning(f"[{job_id}] PlantUML was requested, but '```plantuml' not found in the *regenerated* response (Attempt {regeneration_attempts + 1}).")
+                    elif not generate_diagrams_flag and "```plantuml" in regenerated_questions_block_attempt:
+                        logger.warning(f"[{job_id}] PlantUML was *not* requested, but '```plantuml' *was* found in the *regenerated* response (Attempt {regeneration_attempts + 1}).")
+
+                    current_questions_block = regenerated_questions_block_attempt
                     regeneration_attempts += 1
-                    # Continue to the next iteration to evaluate the regenerated questions
             else:
-                # No regeneration needed based on this cycle's evaluation
                 logger.info(f"[{job_id}] No regeneration needed after attempt {regeneration_attempts + 1}.")
                 final_questions_block = current_questions_block
-                final_evaluation_results = current_evaluation_results # Use the results from this successful evaluation
+                final_evaluation_results = current_evaluation_results
                 loop_exit_reason = "Questions met criteria, or user provided no feedback."
-                break # Exit loop successfully
+                break
 
         # --- End of Regeneration Loop ---
 
         if regeneration_attempts == MAX_REGENERATION_ATTEMPTS:
             loop_exit_reason = f"Reached maximum regeneration attempts ({MAX_REGENERATION_ATTEMPTS}). Using last generated set."
             final_questions_block = current_questions_block
-            # Need to evaluate this final set one last time if loop maxed out
             logger.info(f"[{job_id}] Reached max regeneration attempts. Evaluating final set.")
             final_parsed_questions = parse_questions(final_questions_block)
             if not final_parsed_questions:
                  logger.error(f"[{job_id}] Failed to parse final questions after max attempts. Block: {final_questions_block[:200]}...")
-                 raise ValueError("Failed to parse final questions after max attempts.")
-            final_evaluation_results = []
-            for i, question in enumerate(final_parsed_questions):
-                 q_eval = {"question_num": i + 1, "question_text": question}
-                 q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question, retrieved_context)
-                 q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question, retrieved_context)
-                 final_evaluation_results.append(q_eval)
-
+                 final_evaluation_results = []
+            else:
+                 final_evaluation_results = []
+                 for i, question_block_item in enumerate(final_parsed_questions):
+                     q_eval = {"question_num": i + 1, "question_text": question_block_item}
+                     q_eval["qsts_score"] = evaluate_single_question_qsts(job_id, question_block_item, retrieved_context)
+                     q_eval["qualitative"] = evaluate_single_question_qualitative(job_id, question_block_item, retrieved_context)
+                     final_evaluation_results.append(q_eval)
 
         # --- Construct Final Feedback Summary ---
         job_data["message"] = "Constructing final report..."
-        final_parsed_questions = parse_questions(final_questions_block) # Parse the definite final block
+        final_parsed_questions = parse_questions(final_questions_block)
         num_final_questions = len(final_parsed_questions)
-        final_feedback_summary = f"Processing finished. {num_final_questions} questions generated.\n"
+        final_feedback_summary = f"Processing finished. {num_final_questions} question blocks generated.\n"
         final_feedback_summary += f"Loop Exit Reason: {loop_exit_reason}\n"
+        if regeneration_performed: final_feedback_summary += f"Regeneration was performed {regeneration_attempts} time(s).\n"
+        if job_data.get("regeneration_error"): final_feedback_summary += f"Note: {job_data['regeneration_error']}\n"
 
-        if regeneration_performed:
-             final_feedback_summary += f"Regeneration was performed {regeneration_attempts} time(s).\n"
-        if job_data.get("regeneration_error"):
-             final_feedback_summary += f"Note: {job_data['regeneration_error']}\n"
-
-        # Summarize final evaluation status
         passed_count = 0
-        if final_evaluation_results: # Check if evaluation results exist
+        if final_evaluation_results:
              for res in final_evaluation_results:
                 qsts_ok = res.get('qsts_score', 0) >= QSTS_THRESHOLD
                 qual_ok = not any(not res.get('qualitative', {}).get(metric, True) for metric, must_be_false in CRITICAL_QUALITATIVE_FAILURES.items() if must_be_false is False)
-                if qsts_ok and qual_ok:
-                    passed_count += 1
-             final_feedback_summary += f"Final Evaluation: {passed_count}/{num_final_questions} questions passed all checks (QSTS >= {QSTS_THRESHOLD} and critical qualitative metrics met).\n"
+                if qsts_ok and qual_ok: passed_count += 1
+             final_feedback_summary += f"Final Evaluation: {passed_count}/{num_final_questions} question blocks passed all checks (QSTS >= {QSTS_THRESHOLD} and critical qualitative metrics met).\n"
+        elif not final_parsed_questions and final_questions_block:
+             final_feedback_summary += "Final evaluation could not be completed because the final question block could not be parsed.\n"
         else:
              final_feedback_summary += "Final evaluation could not be completed.\n"
-
 
         # --- Update Job Storage with Final Results ---
         job_data["status"] = "completed"
         job_data["message"] = "Processing complete."
         if "result" not in job_data: job_data["result"] = {}
-        job_data["result"]["generated_questions"] = final_questions_block # Final questions
-        job_data["result"]["evaluation_feedback"] = final_feedback_summary.strip() # Final feedback text
-        job_data["result"]["per_question_evaluation"] = final_evaluation_results # Eval of final questions
-        job_data["result"]["image_paths"] = image_paths # Ensure paths are present
+        job_data["result"]["generated_questions"] = final_questions_block # Final questions block (raw)
+        job_data["result"]["evaluation_feedback"] = final_feedback_summary.strip()
+        job_data["result"]["per_question_evaluation"] = final_evaluation_results
+        job_data["result"]["image_paths"] = image_paths
 
         logger.info(f"[{job_id}] Evaluation/Regeneration task completed successfully. {loop_exit_reason}")
 
@@ -1081,44 +1164,68 @@ async def start_processing_endpoint(
     topics_list: str = Form(...),
     major: str = Form(...),
     retrieval_limit: int = Form(15, ge=1, le=100),
-    similarity_threshold: float = Form(0.3, ge=0.0, le=1.0)
+    similarity_threshold: float = Form(0.3, ge=0.0, le=1.0),
+    # Use bool directly, FastAPI handles 'true'/'false' string from checkbox value
+    generate_diagrams: bool = Form(False, description="Check if PlantUML diagrams should be generated")
 ):
     """ Starts the PDF processing and initial question generation job. """
     job_id = str(uuid.uuid4())
-    logger.info(f"[{job_id}] Received request to start job")
+    # Log the received boolean value explicitly
+    logger.info(f"[{job_id}] Received request to start job. generate_diagrams: {generate_diagrams} (Type: {type(generate_diagrams)})")
     temp_file_paths = []
+
+    # Validate num_questions before storing
+    try:
+        num_q_int = int(num_questions)
+        if not (1 <= num_q_int <= 100):
+             raise ValueError("Number of questions must be between 1 and 100.")
+    except (ValueError, TypeError):
+         logger.error(f"[{job_id}] Invalid num_questions received: {num_questions}")
+         raise HTTPException(status_code=400, detail="Number of questions must be an integer between 1 and 100.")
+
     job_storage[job_id] = {
         "status": "pending", "message": "Validating inputs...",
-        "params": {"course_name": course_name, "num_questions": num_questions, "academic_level": academic_level, "taxonomy_level": taxonomy_level, "topics_list": topics_list, "major": major, "retrieval_limit": retrieval_limit, "similarity_threshold": similarity_threshold},
-        "result": {}, "temp_file_paths": [], "image_paths": [] # Initialize image paths
+        "params": {
+            "course_name": course_name,
+            "num_questions": num_q_int, # Store the validated integer
+            "academic_level": academic_level,
+            "taxonomy_level": taxonomy_level,
+            "topics_list": topics_list,
+            "major": major,
+            "retrieval_limit": retrieval_limit,
+            "similarity_threshold": similarity_threshold,
+            "generate_diagrams": generate_diagrams # Store the boolean
+            },
+        "result": {}, "temp_file_paths": [], "image_paths": []
     }
+    logger.info(f"[{job_id}] Stored params in job_storage: {job_storage[job_id]['params']}") # Verify storage
+
     try:
         if not files: raise HTTPException(status_code=400, detail="No files uploaded.")
-        try: num_q_int = int(num_questions); assert 1 <= num_q_int <= 100
-        except: raise HTTPException(status_code=400, detail="Num questions must be int between 1-100.")
-        # Store the integer version for later use
-        job_storage[job_id]["params"]["num_questions"] = num_q_int
 
+        # --- File Saving Logic (unchanged) ---
         upload_dir = TEMP_UPLOAD_DIR
         valid_files_saved = 0
         for file in files:
             if file.filename and file.filename.lower().endswith(".pdf"):
-                # Basic filename sanitization for temp storage
                 safe_filename = "".join(c for c in file.filename if c.isalnum() or c in ('-', '_', '.'))
-                if not safe_filename: safe_filename = f"file_{valid_files_saved+1}.pdf" # Fallback filename
+                if not safe_filename: safe_filename = f"file_{valid_files_saved+1}.pdf"
                 temp_file_path = upload_dir / f"{job_id}_{uuid.uuid4().hex[:8]}_{safe_filename}"
                 try:
                     with temp_file_path.open("wb") as buffer: shutil.copyfileobj(file.file, buffer)
                     temp_file_paths.append(str(temp_file_path))
                     valid_files_saved += 1
-                    # logger.info(f"[{job_id}] Saved temp file: {temp_file_path}")
-                except Exception as e: logger.error(f"[{job_id}] Failed to save {file.filename}: {e}"); raise HTTPException(status_code=500, detail=f"Failed to save {file.filename}.")
+                except Exception as e:
+                    logger.error(f"[{job_id}] Failed to save {file.filename}: {e}")
+                    raise HTTPException(status_code=500, detail=f"Failed to save {file.filename}.")
                 finally: await file.close()
             else: logger.warning(f"[{job_id}] Skipping invalid/non-PDF file: {file.filename}")
+        # --- End File Saving ---
 
         if valid_files_saved == 0: raise HTTPException(status_code=400, detail="No valid PDF files provided.")
         job_storage[job_id]["temp_file_paths"] = temp_file_paths
 
+        # Add task to background
         background_tasks.add_task(run_processing_job, job_id=job_id, file_paths=temp_file_paths, params=job_storage[job_id]["params"])
         job_storage[job_id]["status"] = "queued"
         job_storage[job_id]["message"] = f"Processing job queued for {valid_files_saved} PDF file(s)."
@@ -1126,12 +1233,12 @@ async def start_processing_endpoint(
         return Job(job_id=job_id, status="queued", message=job_storage[job_id]["message"])
 
     except HTTPException as http_exc:
-        cleanup_job_files(job_id) # Use simplified cleanup
+        cleanup_job_files(job_id)
         job_storage.pop(job_id, None)
         logger.error(f"[{job_id}] Validation error starting job: {http_exc.detail}")
         raise http_exc
     except Exception as e:
-        cleanup_job_files(job_id) # Use simplified cleanup
+        cleanup_job_files(job_id)
         job_storage.pop(job_id, None)
         logger.exception(f"[{job_id}] Failed unexpectedly while starting job: {e}")
         raise HTTPException(status_code=500, detail="Internal server error starting job.")
@@ -1142,16 +1249,16 @@ async def regenerate_questions_endpoint(
     job_id: str, request: RegenerationRequest, background_tasks: BackgroundTasks
 ):
     """ Triggers the evaluation and potential regeneration based on user feedback. """
+    # (This endpoint remains the same as the previous version)
     logger.info(f"[{job_id}] Received request to regenerate/finalize questions.")
     job_data = job_storage.get(job_id)
     if not job_data: raise HTTPException(status_code=404, detail="Job not found")
     current_status = job_data.get("status")
     if current_status != "awaiting_feedback": raise HTTPException(status_code=400, detail=f"Job not awaiting feedback (status: {current_status})")
 
-    job_data["status"] = "queued_feedback" # Set status for polling
+    job_data["status"] = "queued_feedback"
     job_data["message"] = "Queued for evaluation and potential regeneration..."
     logger.info(f"[{job_id}] Queuing evaluation/regeneration task.")
-    # Pass feedback (can be empty string if user didn't provide any)
     background_tasks.add_task(run_regeneration_task, job_id=job_id, user_feedback=request.feedback or "")
 
     result_model = JobResultData(**job_data.get("result", {})) if job_data.get("result") else None
@@ -1161,6 +1268,7 @@ async def regenerate_questions_endpoint(
 @app.get("/status/{job_id}", response_model=Job)
 async def get_job_status(job_id: str):
     """ Endpoint to check the status and result of a processing job. """
+    # (This endpoint remains the same as the previous version)
     job = job_storage.get(job_id)
     if not job: raise HTTPException(status_code=404, detail="Job not found")
     result_data = job.get("result")
@@ -1169,24 +1277,19 @@ async def get_job_status(job_id: str):
         try: job_result_model = JobResultData(**result_data)
         except Exception as e:
             logger.error(f"[{job_id}] Error parsing result data for status: {e}. Data: {result_data}")
-            # If parsing fails, set result to None but still return status/message
-            job["result"] = None # Clear potentially corrupt result
-            job["message"] = job.get("message", "") + " [Result parsing error]"
-            job["status"] = "error" # Mark job as error if result is invalid
-
-    # Re-check result_data after potential clearing
-    result_data = job.get("result")
-    if isinstance(result_data, dict):
-         job_result_model = JobResultData(**result_data) # Try parsing again if it wasn't cleared
-
-    # Return the current job state
+            job["result"] = None; job["message"] = job.get("message", "") + " [Result parsing error]"; job["status"] = "error"
+    result_data = job.get("result") # Re-check after potential clearing
+    if isinstance(result_data, dict) and job_result_model is None: # If it wasn't parsed successfully before
+         try: job_result_model = JobResultData(**result_data)
+         except Exception as e:
+             logger.error(f"[{job_id}] Error parsing result data *again* for status: {e}. Data: {result_data}")
+             job_result_model = None; job["result"] = None; job["message"] = job.get("message", "") + " [Result parsing error persists]"; job["status"] = "error"
     return Job(job_id=job_id, status=job.get("status", "unknown"), message=job.get("message"), result=job_result_model)
 
 
 @app.get("/health")
 async def health_check():
     """ Basic health check endpoint. """
-    # Add checks for dependencies if needed (e.g., Qdrant ping)
     return {"status": "ok"}
 
 # --- Run with Uvicorn ---

@@ -19,7 +19,7 @@ These are the relevant content retrieved from a study material for the course:
 5.  **Complexity:** If appropriate for the taxonomy level (e.g., Apply, Analyze, Create), incorporate real-world scenarios, case studies, or application-based elements to make questions detailed and complex, *provided they remain answerable from the context*.
 6.  **Formatting:** Present the questions as a clear, numbered list.
 
-{diagram_instructions}
+{diagram_instructions}  <-- ADDED PLACEHOLDER
 
 **Final Output:**
-Provide only the numbered list of questions (and associated PlantUML code, if applicable) based on these instructions.
+Provide only the numbered list of questions and associated PlantUML code together. Do not add introductory or concluding remarks.

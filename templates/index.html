@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">   
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bloom QGen Web</title>
     <!-- Link to a modern Google Font (Poppins) -->
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css"">
+    <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <header>
@@ -61,6 +61,12 @@
                     <div>
                         <label for="similarity_threshold">Similarity Threshold:</label>
                         <input type="number" id="similarity_threshold" name="similarity_threshold" min="0" max="1" step="0.05" value="0.3">
+                    </div>
+                     <!-- New Checkbox -->
+                     <div style="grid-column: 1 / -1;"> {/* Span across columns */}
+                        <label for="generate_diagrams" style="display: inline-block; margin-right: 10px;">Generate PlantUML Diagrams?</label>
+                        <input type="checkbox" id="generate_diagrams" name="generate_diagrams" value="true" style="width: auto; vertical-align: middle;">
+                        <small style="vertical-align: middle;">(Check if you want relevant questions to include PlantUML code)</small>
                     </div>
                 </div>
                 <button type="submit" id="submit-button">Start Processing</button>
