@@ -190,14 +190,6 @@ try:
             raise
 
     # --- NLTK Setup ---
-    logger.info("Setting up NLTK resources (stopwords, wordnet, punkt)...")
-    for resource in ['stopwords', 'wordnet', 'punkt']:
-        try:
-            if resource == 'punkt': nltk.data.find(f'tokenizers/{resource}')
-            else: nltk.data.find(f'corpora/{resource}')
-        except (LookupError, nltk.downloader.DownloadError):
-            logger.info(f"Downloading NLTK resource: {resource}")
-            nltk.download(resource, quiet=True)
     stop_words = set(stopwords.words('english'))
     lemmatizer = WordNetLemmatizer()
     logger.info("NLTK setup complete.")
